@@ -61,7 +61,8 @@ export default function Home() {
       
       const pollInterval = setInterval(async () => {
         try {
-          const res = await fetch(`http://localhost:3001/api/status/${mockTransferId}`);
+          const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://jupiter-project-2isy.onrender.com";
+          const res = await fetch(`${BACKEND_URL}/api/status/${mockTransferId}`);
           const data = await res.json();
           
           if (data.stage > progressStage) {
