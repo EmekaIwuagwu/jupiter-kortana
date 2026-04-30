@@ -1,0 +1,18 @@
+# General
+node_modules/
+.env
+.env.*
+!*.example
+
+# Hardhat
+artifacts/
+cache/
+typechain-types/
+
+# Next.js
+.next/
+out/
+build/
+
+# Mac
+.DS_Store

@@ -1,0 +1,17 @@
+{
+  "name": "project-jupiter-contracts",
+  "version": "1.0.0",
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:kortana": "hardhat run scripts/deployKortana.js --network kortanaTestnet",
+    "deploy:sepolia": "hardhat run scripts/deploySepolia.js --network ethereumSepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.2"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "dotenv": "^16.4.5"
+  }
+}
