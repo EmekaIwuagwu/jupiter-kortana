@@ -162,7 +162,7 @@ async function processTransfer(
         const response = await fetch(quoteUrl, {
             headers: { 'Authorization': `Bearer ${API_KEY}`, 'Accept': 'application/json' }
         });
-        const data = await response.json();
+        const data: any = await response.json();
         if (!response.ok) throw new Error(data.description || 'Quote fetch failed');
         txData = data.tx;
         toAmountStr = data.toAmount;
@@ -228,4 +228,3 @@ async function processTransfer(
     }
 }
 
-main().catch(console.error);
