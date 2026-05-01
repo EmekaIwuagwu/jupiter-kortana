@@ -28,8 +28,38 @@ const SEPOLIA_CONFIRMATIONS = 2;
 const MAX_RETRIES = 3;
 const KORTANA_CHAIN_ID = process.env.KORTANA_CHAIN_ID ? parseInt(process.env.KORTANA_CHAIN_ID) : 72511;
 
-// Polling interval for getLogs fallback (every 30 seconds)
-const POLLING_INTERVAL_MS = 30_000;
+// === DEX Aggregator Config (No API key required) ===
+// Primary:  KyberSwap  — free, no auth, deep liquidity on all major chains
+// Fallback: OpenOcean  — free, no auth, broad chain support
+
+const KYBERSWAP_CHAIN_SLUGS: Record<number, string> = {
+    1:        'ethereum',
+    11155111: 'ethereum',
+    137:      'polygon',
+    80002:    'polygon',
+    56:       'bsc',
+    97:       'bsc',
+};
+
+const OPENOCEAN_CHAIN_SLUGS: Record<number, string> = {
+    1:        'eth',
+    137:      'polygon',
+    56:       'bsc',
+};
+
+
+// Per-chain wDNR token addresses
+const WDNR_ADDRESSES: Record<number, string> = {
+    11155111: process.env.WDNR_SEPOLIA_ADDRESS  || '', // Sepolia testnet
+    80002:    process.env.WDNR_AMOY_ADDRESS     || '', // Polygon Amoy testnet
+    137:      process.env.WDNR_POLYGON_ADDRESS   || '', // Polygon Mainnet
+    56:       process.env.WDNR_BNB_ADDRESS       || '', // BNB Mainnet
+    97:       process.env.WDNR_BNB_ADDRESS       || '', // BNB Testnet
+};
+
+// Native token sentinel address used by aggregators to mean "native coin"
+const NATIVE_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+
 
 // === Providers ===
 const kortanaProvider = new ethers.JsonRpcProvider(KORTANA_RPC);
@@ -303,13 +333,25 @@ async function processTransfer(
         return;
     }
 
-    // === Submit to destination chain ===
-    let retries = 0;
-    
-    // FOR TESTNET: Force completion by setting minOut to 1 wei.
-    // This bypasses all slippage reverts on thin testnet pools.
-    const relaxedMinOut = 1n;
-    console.log(`[Relayer] Forcing testnet completion. MinOut set to 1 wei.`);
+    // === Fetch DEX Aggregator swap data (mainnet) or use testnet fallback ===
+    const chainIdNum = Number(dstChainId);
+    const wDNRAddress = WDNR_ADDRESSES[chainIdNum] || '';
+    const executorAddress = await targetExecutor.getAddress();
+
+    // Testnets use MockSwapAdapter — no DEX routing needed
+    const isTestnet = [11155111, 80002, 97].includes(chainIdNum);
+
+    let swapExtraData = '0x';
+    let finalMinOut = 1n;
+
+    if (!isTestnet && wDNRAddress) {
+        console.log(`[Relayer] Mainnet chain ${chainIdNum} — fetching aggregator swap route...`);
+        const result = await fetchSwapData(chainIdNum, wDNRAddress, NATIVE_SENTINEL, amount, executorAddress);
+        swapExtraData = result.extraData;
+        finalMinOut   = result.minOut;
+    } else {
+        console.log(`[Relayer] Testnet chain ${chainIdNum} — MockAdapter fallback (minOut=1 wei).`);
+    }
 
     while (retries < MAX_RETRIES) {
         try {
@@ -321,9 +363,9 @@ async function processTransfer(
                 transferId,
                 dstUser,
                 amount,
-                relaxedMinOut,
+                finalMinOut,
                 deadline,
-                "0x"
+                swapExtraData
             );
 
             console.log(`[Relayer] TX sent: ${tx.hash}`);
@@ -353,4 +395,109 @@ async function processTransfer(
             }
         }
     }
+}
+
+/**
+ * Fetches DEX swap calldata using:
+ *   1. KyberSwap (primary — free, no API key, deep Polygon/BSC/ETH liquidity)
+ *   2. OpenOcean (fallback — free, no API key)
+ *   3. Testnet no-op (if both fail or token has no pool yet)
+ *
+ * Returns ABI-encoded (routerAddress, calldata) as extraData for the executor,
+ * and a minOut with 1% safety margin applied to the quoted output.
+ */
+async function fetchSwapData(
+    chainId: number,
+    fromToken: string,
+    toToken: string,
+    amount: bigint,
+    fromAddress: string
+): Promise<{ extraData: string; minOut: bigint }> {
+
+    // --- Attempt 1: KyberSwap ---
+    try {
+        const chain = KYBERSWAP_CHAIN_SLUGS[chainId];
+        if (chain) {
+            // Step 1: Get route
+            const routeUrl = `https://aggregator-api.kyberswap.com/${chain}/api/v1/routes` +
+                `?tokenIn=${fromToken}&tokenOut=${toToken}&amountIn=${amount.toString()}`;
+
+            const routeRes = await fetch(routeUrl, { headers: { 'Accept': 'application/json' } });
+            const routeJson = await routeRes.json() as any;
+
+            if (routeJson.code === 0 && routeJson.data?.routeSummary) {
+                const routeSummary = routeJson.data.routeSummary;
+
+                // Step 2: Build transaction
+                const buildRes = await fetch(
+                    `https://aggregator-api.kyberswap.com/${chain}/api/v1/route/build`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        body: JSON.stringify({
+                            routeSummary,
+                            sender:            fromAddress,
+                            recipient:         fromAddress, // executor receives then forwards
+                            slippageTolerance: 100,         // 1% in bps
+                            deadline:          Math.floor(Date.now() / 1000) + 1800,
+                        })
+                    }
+                );
+                const buildJson = await buildRes.json() as any;
+
+                if (buildJson.code === 0 && buildJson.data?.data && buildJson.data?.routerAddress) {
+                    const routerAddress = buildJson.data.routerAddress as string;
+                    const callData      = buildJson.data.data as string;
+                    const amountOut     = BigInt(routeSummary.amountOut || '1');
+                    const minOut        = (amountOut * 99n) / 100n; // extra 1% margin
+
+                    const extraData = ethers.AbiCoder.defaultAbiCoder().encode(
+                        ['address', 'bytes'],
+                        [routerAddress, callData]
+                    );
+
+                    console.log(`[KyberSwap] Route found. Out: ${ethers.formatEther(amountOut)} | minOut: ${ethers.formatEther(minOut)}`);
+                    return { extraData, minOut };
+                }
+            }
+            console.warn(`[KyberSwap] No route returned. Trying OpenOcean...`);
+        }
+    } catch (e: any) {
+        console.warn(`[KyberSwap] Failed: ${e.message}. Trying OpenOcean...`);
+    }
+
+    // --- Attempt 2: OpenOcean ---
+    try {
+        const chain = OPENOCEAN_CHAIN_SLUGS[chainId];
+        if (chain) {
+            const url = `https://open-api.openocean.finance/v3/${chain}/swap_quote` +
+                `?inTokenAddress=${fromToken}&outTokenAddress=${toToken}` +
+                `&amount=${ethers.formatEther(amount)}&gasPrice=5&slippage=1&account=${fromAddress}`;
+
+            const res  = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            const json = await res.json() as any;
+
+            if (json.code === 200 && json.data?.to && json.data?.data) {
+                const routerAddress = json.data.to as string;
+                const callData      = json.data.data as string;
+                const amountOut     = BigInt(json.data.outAmount || '1');
+                const minOut        = (amountOut * 99n) / 100n;
+
+                const extraData = ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['address', 'bytes'],
+                    [routerAddress, callData]
+                );
+
+                console.log(`[OpenOcean] Route found. Out: ${ethers.formatEther(amountOut)} | minOut: ${ethers.formatEther(minOut)}`);
+                return { extraData, minOut };
+            }
+            console.warn(`[OpenOcean] No route returned.`);
+        }
+    } catch (e: any) {
+        console.warn(`[OpenOcean] Failed: ${e.message}.`);
+    }
+
+    // --- Fallback: no DEX route found yet (token not listed) ---
+    console.warn(`[Aggregator] No route found on any aggregator. wDNR may not have a DEX pool yet. Using 1 wei minOut (will likely revert on mainnet).`);
+    return { extraData: '0x', minOut: 1n };
 }
