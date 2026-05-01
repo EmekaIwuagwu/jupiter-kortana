@@ -7,7 +7,7 @@ import { TransactionProgress } from '../components/TransactionProgress';
 import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
-import { useWriteContract, useAccount, useSwitchChain } from 'wagmi';
+import { useWriteContract, useAccount, useSwitchChain, usePublicClient } from 'wagmi';
 import { parseEther } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
@@ -22,6 +22,7 @@ export default function Home() {
   const { writeContractAsync } = useWriteContract();
   const { isConnected, chainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
+  const publicClient = usePublicClient();
 
   const handleContinue = (amt: string, dest: string, deadline: number, net: any) => {
     setAmount(amt);
