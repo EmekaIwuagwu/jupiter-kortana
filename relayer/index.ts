@@ -270,6 +270,11 @@ async function processTransfer(
 
     // === Submit to destination chain ===
     let retries = 0;
+    
+    // RELAX SLIPPAGE FOR TESTNET: Reduce minOut by another 5% to account for thin liquidity
+    const relaxedMinOut = (originalMinOutNative * 95n) / 100n;
+    console.log(`[Relayer] Original MinOut: ${ethers.formatEther(originalMinOutNative)} ETH, Relaxed: ${ethers.formatEther(relaxedMinOut)} ETH`);
+
     while (retries < MAX_RETRIES) {
         try {
             console.log(`[Relayer] Submitting executeBridgeAndSwap for ${transferId}... (attempt ${retries + 1})`);
@@ -280,7 +285,7 @@ async function processTransfer(
                 transferId,
                 dstUser,
                 amount,
-                originalMinOutNative,
+                relaxedMinOut,
                 deadline,
                 "0x"
             );

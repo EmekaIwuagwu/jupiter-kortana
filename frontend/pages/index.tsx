@@ -160,7 +160,8 @@ export default function Home() {
 
       const deadline = Math.floor(Date.now() / 1000) + (30 * 60);
       const estimatedOut = parseFloat(amount) * targetNetwork.rate;
-      const minOutNative = parseEther((estimatedOut * 0.995).toFixed(18));
+      // Use 5% slippage for testnet (0.95) instead of 0.5% (0.995)
+      const minOutNative = parseEther((estimatedOut * 0.95).toFixed(18));
       const amountWei = parseEther(amount);
 
       // Step 0: Switch to Kortana if needed
