@@ -18,7 +18,7 @@ const AMOY_RPC = process.env.AMOY_RPC || 'https://rpc-amoy.polygon.technology';
 const BNB_RPC = process.env.BNB_RPC || 'https://bsc-testnet-rpc.publicnode.com';
 
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY || '';
-const KORTANA_BRIDGE_ADDRESS = process.env.KORTANA_BRIDGE_ADDRESS || '0xa509C6b006d7174e479385Fedf9Ae5462D7747A3';
+const KORTANA_BRIDGE_ADDRESS = process.env.KORTANA_BRIDGE_ADDRESS || '0x905784c7611Df616F6021AC57b95eE6B6983B416';
 const SEPOLIA_EXECUTOR_ADDRESS = process.env.SEPOLIA_EXECUTOR_ADDRESS || '';
 const AMOY_EXECUTOR_ADDRESS = process.env.AMOY_EXECUTOR_ADDRESS || '';
 const BNB_EXECUTOR_ADDRESS = process.env.BNB_EXECUTOR_ADDRESS || '';
