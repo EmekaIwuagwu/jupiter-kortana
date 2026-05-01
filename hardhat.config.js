@@ -15,6 +15,16 @@ module.exports = {
       url: "https://ethereum-sepolia-rpc.publicnode.com",
       accounts: [PRIVATE_KEY],
       chainId: 11155111
+    },
+    polygonAmoy: {
+      url: "https://rpc-amoy.polygon.technology",
+      accounts: [PRIVATE_KEY],
+      chainId: 80002
+    },
+    bnbTestnet: {
+      url: "https://data-seed-prebsc-1-s1.binance.org:8545",
+      accounts: [PRIVATE_KEY],
+      chainId: 97
     }
   }
 };

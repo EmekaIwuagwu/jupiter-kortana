@@ -25,12 +25,15 @@ dotenv.config();
 // Configuration
 const KORTANA_RPC = process.env.KORTANA_RPC || 'https://poseidon-rpc.testnet.kortana.xyz/';
 const SEPOLIA_RPC = process.env.SEPOLIA_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
+const AMOY_RPC = process.env.AMOY_RPC || 'https://rpc-amoy.polygon.technology';
+const BNB_RPC = process.env.BNB_RPC || 'https://bsc-testnet-rpc.publicnode.com';
+
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY || '';
 const KORTANA_BRIDGE_ADDRESS = process.env.KORTANA_BRIDGE_ADDRESS || '';
+
 const SEPOLIA_EXECUTOR_ADDRESS = process.env.SEPOLIA_EXECUTOR_ADDRESS || '';
-const WDNR_SEPOLIA_ADDRESS = process.env.WDNR_SEPOLIA_ADDRESS || '';
-const ETH_ADDRESS = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'; // Standard for native asset in 1inch
-const API_KEY = process.env.DEX_API_KEY || '';
+const AMOY_EXECUTOR_ADDRESS = process.env.AMOY_EXECUTOR_ADDRESS || '';
+const BNB_EXECUTOR_ADDRESS = process.env.BNB_EXECUTOR_ADDRESS || '';
 
 const CONFIRMATION_BLOCKS = 12;
 const SEPOLIA_CONFIRMATIONS = 2;
@@ -133,9 +136,23 @@ async function processTransfer(
     console.log(`Processing ${transferId} to ${dstUser} on chain ${dstChainId.toString()} for ${ethers.formatEther(amount)} DNR`);
 
     // Multi-chain routing logic
-    if (dstChainId !== BigInt(11155111)) {
+    let targetProvider, targetExecutor;
+    
+    if (dstChainId === BigInt(11155111)) {
+        targetProvider = sepoliaProvider;
+        targetExecutor = sepoliaExecutor;
+    } else if (dstChainId === BigInt(80002)) {
+        const amoyProvider = new ethers.JsonRpcProvider(AMOY_RPC);
+        const amoyWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, amoyProvider);
+        targetExecutor = new ethers.Contract(AMOY_EXECUTOR_ADDRESS, sepoliaExecutorAbi, amoyWallet);
+        targetProvider = amoyProvider;
+    } else if (dstChainId === BigInt(97)) {
+        const bnbProvider = new ethers.JsonRpcProvider(BNB_RPC);
+        const bnbWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, bnbProvider);
+        targetExecutor = new ethers.Contract(BNB_EXECUTOR_ADDRESS, sepoliaExecutorAbi, bnbWallet);
+        targetProvider = bnbProvider;
+    } else {
         console.error(`Chain ${dstChainId.toString()} not currently supported by this relayer instance`);
-        // We would mark this as FAILED in a database here, as this relayer node doesn't support the requested chain
         return;
     }
 
@@ -147,7 +164,7 @@ async function processTransfer(
     }
 
     // Double-processing guard
-    const isProcessed = await sepoliaExecutor.processedTransfers(transferId);
+    const isProcessed = await targetExecutor.processedTransfers(transferId);
     if (isProcessed) {
         console.log(`Transfer ${transferId} already processed on-chain. Skipping.`);
         return;
@@ -170,11 +187,11 @@ async function processTransfer(
     let retries = 0;
     while (retries < MAX_RETRIES) {
         try {
-            console.log(`Submitting TX to Sepolia for ${transferId}...`);
-            // Stage 3: Minting wDNR on Sepolia
+            console.log(`Submitting TX to target chain ${dstChainId.toString()} for ${transferId}...`);
+            // Stage 3: Minting wDNR on target chain
             processedEvents.set(transferId, 3);
 
-            const sepoliaTx = await sepoliaExecutor.executeBridgeAndSwap(
+            const tx = await targetExecutor.executeBridgeAndSwap(
                 KORTANA_CHAIN_ID,
                 transferId,
                 dstUser,
@@ -184,11 +201,11 @@ async function processTransfer(
                 extraData
             );
 
-            console.log(`TX sent: ${sepoliaTx.hash}. Waiting for confirmations...`);
+            console.log(`TX sent: ${tx.hash}. Waiting for confirmations...`);
             // Stage 4: Swapping
             processedEvents.set(transferId, 4);
 
-            await sepoliaTx.wait(SEPOLIA_CONFIRMATIONS);
+            await tx.wait(SEPOLIA_CONFIRMATIONS);
             console.log(`Bridge completed successfully for ${transferId}!`);
 
             // Stage 5: Complete
