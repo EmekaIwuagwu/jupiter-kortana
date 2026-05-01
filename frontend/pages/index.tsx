@@ -46,10 +46,12 @@ export default function Home() {
         });
         const json = await res.json();
         if (json.result && json.result.status === '0x1') {
-          return json.result; // confirmed success
+          return json.result;
         }
         if (json.result && json.result.status === '0x0') {
-          throw new Error('Transaction reverted on Kortana');
+          // Decode revert reason if available
+          const revertReason = decodeRevertReason(json.result);
+          throw new Error(`Transaction reverted on Kortana. Reason: ${revertReason}`);
         }
       } catch (e: any) {
         if (e.message?.includes('reverted')) throw e;
@@ -79,6 +81,62 @@ export default function Home() {
     });
     const json = await res.json();
     return BigInt(json.result || '0x0');
+  };
+
+  // Decodes a Solidity revert reason from receipt data
+  const decodeRevertReason = (receipt: any): string => {
+    // Try revertReason field (some nodes provide this)
+    if (receipt.revertReason) return receipt.revertReason;
+    // Try to decode Error(string) = 0x08c379a0
+    const errData: string = receipt.logsBloom || '';
+    return 'Unknown (check contract requires)';
+  };
+
+  // Pre-flight simulation using eth_call before sending real tx
+  const simulateSendTx = async (
+    from: string,
+    valueHex: string,
+    calldata: string
+  ): Promise<{ ok: boolean; error: string | null }> => {
+    try {
+      const res = await fetch(KORTANA_RPC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'eth_call',
+          params: [{
+            from,
+            to: KORTANA_BRIDGE_TESTNET,
+            value: valueHex,
+            data: calldata
+          }, 'latest'],
+          id: 99
+        })
+      });
+      const json = await res.json();
+      if (json.error) {
+        // Decode the error message from hex if possible
+        let errMsg = json.error.message || 'Simulation failed';
+        const errData: string = json.error.data || '';
+        if (errData.startsWith('0x08c379a0')) {
+          // Error(string) ABI encoding: skip 4-byte selector + 32-byte offset + 32-byte length
+          try {
+            const hexStr = errData.slice(10); // remove 0x08c379a0
+            const offset = parseInt(hexStr.slice(0, 64), 16) * 2;
+            const length = parseInt(hexStr.slice(64, 128), 16) * 2;
+            const msgHex = hexStr.slice(128, 128 + length);
+            errMsg = Buffer.from(msgHex, 'hex').toString('utf8');
+          } catch {}
+        } else if (errData && errData !== '0x') {
+          errMsg += ` | Raw: ${errData}`;
+        }
+        return { ok: false, error: errMsg };
+      }
+      return { ok: true, error: null };
+    } catch (e: any) {
+      return { ok: false, error: e.message };
+    }
   };
 
   const advanceStage = (stage: number) => {
@@ -117,7 +175,33 @@ export default function Home() {
         }
       }
 
-      // Step 1: Submit bridge transaction on Kortana
+      // Step 1: Pre-flight simulation — run eth_call FIRST to detect revert reason
+      console.log('[Debug] Running pre-flight eth_call simulation...');
+      const { encodeFunctionData } = await import('viem');
+      const simCalldata = encodeFunctionData({
+        abi: KortanaBridgeABI,
+        functionName: 'send',
+        args: [BigInt(targetNetwork.id), destination as `0x${string}`, minOutNative, BigInt(deadline)],
+      });
+      const valueHex = '0x' + amountWei.toString(16);
+      const sim = await simulateSendTx(address!, valueHex, simCalldata);
+      if (!sim.ok) {
+        console.error(`[Debug] Pre-flight FAILED: "${sim.error}"`);
+        console.error('[Debug] Args:', {
+          dstChainId: targetNetwork.id,
+          dstUser: destination,
+          minOutNative: minOutNative.toString(),
+          deadline,
+          value: amountWei.toString(),
+          sender: address,
+        });
+        // Still allow the real tx to proceed so MetaMask shows the error natively
+        // This gives us the exact revert reason in the console
+      } else {
+        console.log('[Debug] Pre-flight PASSED — transaction should succeed');
+      }
+
+      // Step 2: Submit bridge transaction on Kortana
       console.log(`[Jupiter] Triggering MetaMask for transaction to ${targetNetwork.name}...`);
 
       const txHash = await writeContractAsync({
