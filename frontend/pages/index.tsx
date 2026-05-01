@@ -8,7 +8,7 @@ import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
 import { useWriteContract, useAccount, useSwitchChain } from 'wagmi';
-import { parseEther } from 'viem';
+import { parseEther, encodePacked, keccak256, toFunctionSelector } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
 const KORTANA_RPC = 'https://poseidon-rpc.testnet.kortana.xyz/';
@@ -57,6 +57,28 @@ export default function Home() {
       await new Promise(r => setTimeout(r, 4000));
     }
     throw new Error('Kortana receipt timeout after 2 minutes');
+  };
+
+  // Reads userNonce(address) from Kortana at a specific block via raw eth_call
+  const getKortanaNonce = async (userAddress: string, blockNumber: string): Promise<bigint> => {
+    // userNonce(address) function selector
+    const selector = toFunctionSelector('function userNonce(address) view returns (uint256)');
+    // Pad address to 32 bytes
+    const paddedAddr = userAddress.toLowerCase().replace('0x', '').padStart(64, '0');
+    const callData = selector + paddedAddr;
+
+    const res = await fetch(KORTANA_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: KORTANA_BRIDGE_TESTNET, data: callData }, blockNumber],
+        id: 1
+      })
+    });
+    const json = await res.json();
+    return BigInt(json.result || '0x0');
   };
 
   const advanceStage = (stage: number) => {
@@ -111,31 +133,25 @@ export default function Home() {
       console.log('[Jupiter] Kortana Tx Submitted:', txHash);
       advanceStage(1); // DNR Locked
 
-      // Step 2: Get receipt via raw RPC and extract transferId
+      // Step 2: Get receipt confirmation via raw RPC
       console.log('[Jupiter] Waiting for Kortana transaction receipt...');
       const receipt = await getKortanaReceipt(txHash);
-      console.log('[Jupiter] Receipt confirmed. Logs found:', receipt.logs?.length ?? 0);
+      console.log('[Jupiter] Receipt confirmed. Block:', receipt.blockNumber);
 
-      // Step 3: Extract transferId from logs
-      let realTransferId: string = '0x' + '0'.repeat(64);
-      const logs: any[] = receipt.logs || [];
+      // Step 3: Compute transferId DETERMINISTICALLY
+      // NativeKortanaBridge.sol: keccak256(abi.encodePacked(block.chainid, msg.sender, userNonce++))
+      // After tx, nonce = N+1. So nonce used in tx = N = (nonceAfterTx - 1)
+      const nonceAfterTx = await getKortanaNonce(address!, receipt.blockNumber);
+      const nonceUsed = nonceAfterTx - 1n;
+      console.log('[Jupiter] Nonce after tx:', nonceAfterTx.toString(), '→ nonce used in tx:', nonceUsed.toString());
 
-      for (const log of logs) {
-        const topics: string[] = log.topics || [];
-        if (
-          log.address?.toLowerCase() === KORTANA_BRIDGE_TESTNET.toLowerCase() &&
-          topics[0]?.toLowerCase() === BRIDGE_INITIATED_TOPIC
-        ) {
-          realTransferId = topics[1];
-          console.log('[Jupiter] Extracted Transfer ID:', realTransferId);
-          break;
-        }
-      }
-
-      if (realTransferId === '0x' + '0'.repeat(64)) {
-        console.warn('[Jupiter] Could not extract transferId. All log addresses:',
-          logs.map(l => l.address));
-      }
+      const realTransferId = keccak256(
+        encodePacked(
+          ['uint256', 'address', 'uint256'],
+          [BigInt(72511), address as `0x${string}`, nonceUsed]
+        )
+      );
+      console.log('[Jupiter] Computed Transfer ID:', realTransferId);
 
       // Stage 2: Relayer is now processing
       advanceStage(2);
