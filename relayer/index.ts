@@ -103,7 +103,7 @@ async function startRelayer() {
 
     kortanaBridge.on("BridgeInitiated", async (transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, timestamp, event) => {
         if (event.address.toLowerCase() !== KORTANA_BRIDGE_ADDRESS.toLowerCase()) return;
-        
+
         if (processedEvents.has(transferId)) {
             console.log(`Transfer ${transferId} already processed in cache. Skipping.`);
             return;
@@ -122,12 +122,12 @@ async function startRelayer() {
 }
 
 async function processTransfer(
-    transferId: string, 
-    dstUser: string, 
+    transferId: string,
+    dstUser: string,
     dstChainId: bigint,
-    amount: bigint, 
-    originalMinOutNative: bigint, 
-    deadline: bigint, 
+    amount: bigint,
+    originalMinOutNative: bigint,
+    deadline: bigint,
     blockNumber: number
 ) {
     console.log(`Processing ${transferId} to ${dstUser} on chain ${dstChainId.toString()} for ${ethers.formatEther(amount)} DNR`);
@@ -153,37 +153,16 @@ async function processTransfer(
         return;
     }
 
-    // Step 2: DEX Aggregator REST Quote
-    // Example: 1inch-style GET /swap
-    const quoteUrl = `https://api.1inch.dev/swap/v5.2/11155111/swap?src=${WDNR_SEPOLIA_ADDRESS}&dst=${ETH_ADDRESS}&amount=${amount.toString()}&from=${SEPOLIA_EXECUTOR_ADDRESS}&slippage=1&disableEstimate=true`;
-    
-    let txData, toAmountStr;
-    try {
-        const response = await fetch(quoteUrl, {
-            headers: { 'Authorization': `Bearer ${API_KEY}`, 'Accept': 'application/json' }
-        });
-        const data: any = await response.json();
-        if (!response.ok) throw new Error(data.description || 'Quote fetch failed');
-        txData = data.tx;
-        toAmountStr = data.toAmount;
-    } catch (error) {
-        console.error(`REST API failure for ${transferId}:`, error);
-        // Error Handling: REST API failure -> log, mark transfer as PENDING_RETRY, skip submission
-        return;
-    }
+    // Step 2: Direct On-Chain Uniswap Routing (No APIs!)
+    // We completely bypass off-chain REST aggregators. 
+    // The UniswapSwapAdapter handles the routing entirely on the blockchain.
 
     // Step 3: Compute minOutNative
-    const toAmount = BigInt(toAmountStr);
-    const minOutNative = toAmount * BigInt(10000 - SAFETY_MARGIN_BPS) / 10000n;
-
-    // Use the higher of the user's requested minimum and the safely calculated slippage minimum
-    const finalMinOutNative = minOutNative > originalMinOutNative ? minOutNative : originalMinOutNative;
+    const finalMinOutNative = originalMinOutNative;
 
     // Step 4: Encode extraData
-    const extraData = ethers.AbiCoder.defaultAbiCoder().encode(
-        ['address', 'bytes'],
-        [txData.to, txData.data]
-    );
+    // We send empty bytes since the UniswapAdapter computes the path on-chain!
+    const extraData = "0x";
 
     /// TODO: integrate multi-sig or threshold validator signatures before step 5
 
@@ -194,7 +173,7 @@ async function processTransfer(
             console.log(`Submitting TX to Sepolia for ${transferId}...`);
             // Stage 3: Minting wDNR on Sepolia
             processedEvents.set(transferId, 3);
-            
+
             const sepoliaTx = await sepoliaExecutor.executeBridgeAndSwap(
                 KORTANA_CHAIN_ID,
                 transferId,
@@ -204,14 +183,14 @@ async function processTransfer(
                 deadline,
                 extraData
             );
-            
+
             console.log(`TX sent: ${sepoliaTx.hash}. Waiting for confirmations...`);
             // Stage 4: Swapping
             processedEvents.set(transferId, 4);
-            
+
             await sepoliaTx.wait(SEPOLIA_CONFIRMATIONS);
             console.log(`Bridge completed successfully for ${transferId}!`);
-            
+
             // Stage 5: Complete
             processedEvents.set(transferId, 5);
             break;
