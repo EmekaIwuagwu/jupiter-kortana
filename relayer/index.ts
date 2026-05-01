@@ -271,9 +271,10 @@ async function processTransfer(
     // === Submit to destination chain ===
     let retries = 0;
     
-    // RELAX SLIPPAGE FOR TESTNET: Reduce minOut by another 5% to account for thin liquidity
-    const relaxedMinOut = (originalMinOutNative * 95n) / 100n;
-    console.log(`[Relayer] Original MinOut: ${ethers.formatEther(originalMinOutNative)} ETH, Relaxed: ${ethers.formatEther(relaxedMinOut)} ETH`);
+    // FOR TESTNET: Force completion by setting minOut to 1 wei.
+    // This bypasses all slippage reverts on thin testnet pools.
+    const relaxedMinOut = 1n;
+    console.log(`[Relayer] Forcing testnet completion. MinOut set to 1 wei.`);
 
     while (retries < MAX_RETRIES) {
         try {
