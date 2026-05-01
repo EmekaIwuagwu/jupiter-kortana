@@ -109,6 +109,34 @@ app.get('/api/debug', (req, res) => {
 
 app.get('/api/ping', (req, res) => res.status(200).send('pong'));
 
+// === DNR Price Proxy ===
+// Browser can't call dex.kortana.xyz directly (CORS). This proxies it server-side.
+let dnrPriceCache: { price: string; timestamp: number } | null = null;
+const DNR_PRICE_TTL_MS = 30_000;
+
+app.get('/api/dnr-price', async (req, res) => {
+    // Serve from cache if still fresh
+    if (dnrPriceCache && Date.now() - dnrPriceCache.timestamp < DNR_PRICE_TTL_MS) {
+        return res.json({ success: true, price_dnr_usd: dnrPriceCache.price, cached: true });
+    }
+    try {
+        const response = await fetch('https://dex.kortana.xyz/api/stats');
+        const json = await response.json() as any;
+        if (json.success && json.data?.price_dnr_usd) {
+            dnrPriceCache = { price: json.data.price_dnr_usd, timestamp: Date.now() };
+            return res.json({ success: true, price_dnr_usd: json.data.price_dnr_usd, cached: false });
+        }
+        throw new Error('Invalid price response');
+    } catch (err: any) {
+        console.error('[Relayer] DNR price fetch failed:', err.message);
+        // Return cached value if available, even if stale
+        if (dnrPriceCache) {
+            return res.json({ success: true, price_dnr_usd: dnrPriceCache.price, cached: true, stale: true });
+        }
+        return res.status(502).json({ success: false, error: 'Price unavailable' });
+    }
+});
+
 // Anti-sleep
 const PORT = process.env.PORT || 3001;
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
