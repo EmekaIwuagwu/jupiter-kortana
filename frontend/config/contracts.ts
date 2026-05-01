@@ -1,5 +1,5 @@
 export const KORTANA_BRIDGE_TESTNET = "0x905784c7611Df616F6021AC57b95eE6B6983B416";
-export const POLYGON_EXECUTOR_TESTNET = "0xa509C6b006d7174e479385Fedf9Ae5462D7747A3";
+export const POLYGON_EXECUTOR_TESTNET = "0x905784c7611Df616F6021AC57b95eE6B6983B416";
 
 // Minimal KortanaBridge ABI — send() uses msg.value, emits event only (no struct storage)
 export const KortanaBridgeABI = [
