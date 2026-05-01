@@ -1,7 +1,7 @@
-export const KORTANA_BRIDGE_TESTNET = "0xa509C6b006d7174e479385Fedf9Ae5462D7747A3";
+export const KORTANA_BRIDGE_TESTNET = "0x905784c7611Df616F6021AC57b95eE6B6983B416";
 export const POLYGON_EXECUTOR_TESTNET = "0xa509C6b006d7174e479385Fedf9Ae5462D7747A3";
 
-// KortanaSendBridge ABI — simplified: send() uses msg.value directly
+// Minimal KortanaBridge ABI — send() uses msg.value, emits event only (no struct storage)
 export const KortanaBridgeABI = [
   {
     "inputs": [
@@ -13,6 +13,13 @@ export const KortanaBridgeABI = [
     "name": "send",
     "outputs": [],
     "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "name": "userNonce",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
     "type": "function"
   },
   {

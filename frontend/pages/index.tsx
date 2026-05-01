@@ -201,33 +201,14 @@ export default function Home() {
         console.log('[Debug] Pre-flight PASSED — transaction should succeed');
       }
 
-      // Step 2: Estimate gas for the real transaction
-      let gasLimit: bigint = 300000n; // safe default fallback
-      try {
-        const gasRes = await fetch(KORTANA_RPC, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'eth_estimateGas',
-            params: [{ from: address, to: KORTANA_BRIDGE_TESTNET, value: valueHex, data: simCalldata }],
-            id: 2
-          })
-        });
-        const gasJson = await gasRes.json();
-        if (gasJson.result) {
-          const estimated = BigInt(gasJson.result);
-          gasLimit = estimated + (estimated * 50n / 100n); // add 50% buffer
-          console.log(`[Debug] Gas estimate: ${estimated.toString()}, using ${gasLimit.toString()} with 50% buffer`);
-        } else {
-          console.warn('[Debug] Gas estimation failed, using default 300000:', gasJson.error);
-        }
-      } catch (e) {
-        console.warn('[Debug] Gas estimation error, using default:', e);
-      }
+      // Step 2: Use hardcoded gas limit.
+      // Kortana's eth_estimateGas returns ~29k which is WRONG (real cost ~50k).
+      // The new minimal bridge contract costs ~50k gas. We use 150k as a safe 3x buffer.
+      const gasLimit = 150000n;
+      console.log(`[Debug] Using hardcoded gas limit: ${gasLimit.toString()}`);
 
       // Step 3: Submit as a RAW sendTransaction — EOA-style, lowest abstraction possible
-      console.log(`[Jupiter] Sending raw tx to Kortana... (gas: ${gasLimit.toString()})`);
+      console.log(`[Jupiter] Sending raw tx to new bridge at ${KORTANA_BRIDGE_TESTNET}...`);
 
       const txHash = await sendTransactionAsync({
         to: KORTANA_BRIDGE_TESTNET as `0x${string}`,
