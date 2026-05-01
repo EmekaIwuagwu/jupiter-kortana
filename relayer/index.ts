@@ -63,23 +63,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Debug endpoint — shows last known error per transfer
+const transferErrors = new Map<string, string>();
+
 app.get('/api/status/:transferId', (req, res) => {
     const { transferId } = req.params;
     const normalized = transferId.toLowerCase();
     const found = [...processedEvents.keys()].find(k => k.toLowerCase() === normalized);
     if (found) {
-        res.json({ status: 'FOUND', stage: processedEvents.get(found) });
+        res.json({ status: 'FOUND', stage: processedEvents.get(found), error: transferErrors.get(found) || null });
     } else {
         res.json({ status: 'NOT_FOUND', stage: 1 });
     }
 });
 
-// Debug endpoint - list all known transfers
+app.get('/api/debug/:transferId', (req, res) => {
+    const { transferId } = req.params;
+    res.json({
+        stage: processedEvents.get(transferId) ?? null,
+        error: transferErrors.get(transferId) ?? null,
+        dispatched: dispatchedTransfers.has(transferId.toLowerCase()),
+        lastScannedBlock,
+        listeningTo: KORTANA_BRIDGE_ADDRESS,
+    });
+});
+
 app.get('/api/debug', (req, res) => {
     res.json({
         knownTransfers: [...processedEvents.entries()],
+        errors: [...transferErrors.entries()],
         dispatchedCount: dispatchedTransfers.size,
-        lastScannedBlock
+        lastScannedBlock,
+        listeningTo: KORTANA_BRIDGE_ADDRESS
     });
 });
 
@@ -269,11 +284,18 @@ async function processTransfer(
             break;
 
         } catch (error: any) {
-            console.error(`[Relayer] TX failed attempt ${retries + 1}:`, error?.shortMessage || error);
+            // Full error extraction for debugging
+            const shortMsg = error?.shortMessage || error?.message || 'Unknown error';
+            const revertData = error?.data || error?.error?.data || '';
+            const reason = error?.reason || '';
+            const fullLog = `[Relayer][ERROR] attempt ${retries + 1}: ${shortMsg} | reason: ${reason} | revertData: ${revertData}`;
+            console.error(fullLog);
+            transferErrors.set(transferId, fullLog);
+
             retries++;
             if (retries >= MAX_RETRIES) {
-                console.error(`[Relayer] Max retries reached for ${transferId}.`);
-                processedEvents.set(transferId, 2); // Reset to processing so UI can see it's still pending
+                console.error(`[Relayer] Max retries reached for ${transferId}. Check /api/debug/${transferId}`);
+                processedEvents.set(transferId, 2);
             } else {
                 await new Promise(r => setTimeout(r, 5000 * retries));
             }

@@ -270,6 +270,17 @@ export default function Home() {
 
           console.log(`[Jupiter] Poll ${pollCount}: stage=${data.stage}, transferId=${realTransferId}`);
 
+          // Log relayer error if present
+          if (data.error) {
+            console.error(`[Relayer Error] ${data.error}`);
+          }
+
+          // If stuck at stage 2 for more than 3 polls, fetch full debug info
+          if (data.stage <= 2 && pollCount === 5) {
+            const dbg = await fetch(`${BACKEND_URL}/api/debug/${realTransferId}`).then(r => r.json()).catch(() => null);
+            console.warn('[Debug] Relayer state for this transfer:', JSON.stringify(dbg, null, 2));
+          }
+
           // Always advance forward, never go backward
           if (data.stage > progressRef.current) {
             advanceStage(data.stage);
