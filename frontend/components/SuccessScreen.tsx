@@ -9,8 +9,8 @@ interface SuccessScreenProps {
   onReset: () => void;
 }
 
-// Kortana Testnet Block Explorer
-const KORTANA_EXPLORER = 'https://poseidon-blockscout.testnet.kortana.xyz/tx/';
+// Kortana Testnet Block Explorer (official)
+const KORTANA_EXPLORER = 'https://explorer.testnet.kortana.xyz/tx/';
 
 // Destination chain explorer URLs
 const DESTINATION_EXPLORERS: Record<number, { name: string; url: string }> = {
