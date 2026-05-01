@@ -123,8 +123,8 @@ export default function Home() {
       const txHash = await writeContractAsync({
         abi: KortanaBridgeABI,
         address: KORTANA_BRIDGE_TESTNET as `0x${string}`,
-        functionName: 'bridgeAndSwap',
-        args: [BigInt(targetNetwork.id), amountWei, destination as `0x${string}`, minOutNative, BigInt(deadline)],
+        functionName: 'send',
+        args: [BigInt(targetNetwork.id), destination as `0x${string}`, minOutNative, BigInt(deadline)],
         value: amountWei,
         chainId: 72511,
       });
