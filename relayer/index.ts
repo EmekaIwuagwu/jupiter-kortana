@@ -6,23 +6,12 @@ import cors from 'cors';
 dotenv.config();
 
 /**
- * @title Project Jupiter Relayer
- * @author Project Jupiter Team
- * @notice Off-chain TypeScript service that bridges Kortana to Polygon.
- * 
- * LIFECYCLE:
- * 1. Listens for `BridgeInitiated` events on the Kortana network.
- * 2. Fetches swap route from DEX Aggregator (e.g., 1inch) for wDNR -> POL.
- * 3. Applies safety margins to the minimum output.
- * 4. Formats calldata and submits transaction to `PolygonBridgeExecutor`.
- * 
- * SECURITY ASSUMPTIONS:
- * - Relayer's private key must be secured.
- * - DEX Aggregator responses must be sanitized (in the adapter).
- * - Multi-sig / threshold validators should be added before transaction submission.
+ * @title Project Jupiter Relayer v2
+ * @notice Dual-mode event listener: WebSocket `on` listener + periodic `getLogs` polling fallback.
+ *         This prevents missed events on unstable RPC connections.
  */
 
-// Configuration
+// === Configuration ===
 const KORTANA_RPC = process.env.KORTANA_RPC || 'https://poseidon-rpc.testnet.kortana.xyz/';
 const SEPOLIA_RPC = process.env.SEPOLIA_RPC || 'https://ethereum-sepolia-rpc.publicnode.com';
 const AMOY_RPC = process.env.AMOY_RPC || 'https://rpc-amoy.polygon.technology';
@@ -30,7 +19,6 @@ const BNB_RPC = process.env.BNB_RPC || 'https://bsc-testnet-rpc.publicnode.com';
 
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY || '';
 const KORTANA_BRIDGE_ADDRESS = process.env.KORTANA_BRIDGE_ADDRESS || '';
-
 const SEPOLIA_EXECUTOR_ADDRESS = process.env.SEPOLIA_EXECUTOR_ADDRESS || '';
 const AMOY_EXECUTOR_ADDRESS = process.env.AMOY_EXECUTOR_ADDRESS || '';
 const BNB_EXECUTOR_ADDRESS = process.env.BNB_EXECUTOR_ADDRESS || '';
@@ -38,14 +26,17 @@ const BNB_EXECUTOR_ADDRESS = process.env.BNB_EXECUTOR_ADDRESS || '';
 const CONFIRMATION_BLOCKS = 2;
 const SEPOLIA_CONFIRMATIONS = 2;
 const MAX_RETRIES = 3;
-const SAFETY_MARGIN_BPS = 50; // 0.5%
 const KORTANA_CHAIN_ID = process.env.KORTANA_CHAIN_ID ? parseInt(process.env.KORTANA_CHAIN_ID) : 72511;
 
+// Polling interval for getLogs fallback (every 30 seconds)
+const POLLING_INTERVAL_MS = 30_000;
+
+// === Providers ===
 const kortanaProvider = new ethers.JsonRpcProvider(KORTANA_RPC);
 const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
 const relayerWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, sepoliaProvider);
 
-// ABIs
+// === ABIs ===
 const kortanaBridgeAbi = [
     "event BridgeInitiated(bytes32 indexed transferId, address indexed sender, address indexed dstUser, uint256 dstChainId, uint256 amount, uint256 minOutNative, uint256 deadline, uint256 timestamp)"
 ];
@@ -57,71 +48,156 @@ const sepoliaExecutorAbi = [
 
 const kortanaBridge = new ethers.Contract(KORTANA_BRIDGE_ADDRESS, kortanaBridgeAbi, kortanaProvider);
 const sepoliaExecutor = new ethers.Contract(SEPOLIA_EXECUTOR_ADDRESS, sepoliaExecutorAbi, relayerWallet);
+const bridgeIface = new ethers.Interface(kortanaBridgeAbi);
 
-const processedEvents = new Map<string, number>(); // transferId -> stage (2: Relayer picked up, 3: Minting, 4: Swapping, 5: Complete)
+// === In-Memory State ===
+// transferId -> stage: 1=Locked, 2=Relayer, 3=Minting, 4=Swapping, 5=Complete
+const processedEvents = new Map<string, number>();
+// transferId -> already dispatched (prevents double-processing)
+const dispatchedTransfers = new Set<string>();
 
-// --- Express Backend API Setup ---
+let lastScannedBlock = 0;
+
+// === Express API ===
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 app.get('/api/status/:transferId', (req, res) => {
     const { transferId } = req.params;
-    if (processedEvents.has(transferId)) {
-        res.json({ status: 'FOUND', stage: processedEvents.get(transferId) });
+    const normalized = transferId.toLowerCase();
+    const found = [...processedEvents.keys()].find(k => k.toLowerCase() === normalized);
+    if (found) {
+        res.json({ status: 'FOUND', stage: processedEvents.get(found) });
     } else {
-        res.json({ status: 'NOT_FOUND', stage: 1 }); // Stage 1 implies still locked on Kortana, relayer hasn't picked up yet
+        res.json({ status: 'NOT_FOUND', stage: 1 });
     }
 });
 
-const PORT = process.env.PORT || 3001;
-
-// --- ANTI-SLEEP MECHANISM FOR RENDER ---
-app.get('/api/ping', (req, res) => {
-    res.status(200).send('pong');
+// Debug endpoint - list all known transfers
+app.get('/api/debug', (req, res) => {
+    res.json({
+        knownTransfers: [...processedEvents.entries()],
+        dispatchedCount: dispatchedTransfers.size,
+        lastScannedBlock
+    });
 });
 
-// Ping our own endpoint every 10 minutes to prevent Render free tier from sleeping
-const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
+app.get('/api/ping', (req, res) => res.status(200).send('pong'));
+
+// Anti-sleep
+const PORT = process.env.PORT || 3001;
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
 setInterval(async () => {
     try {
         await fetch(`${RENDER_EXTERNAL_URL}/api/ping`);
-        console.log(`[Anti-Sleep] Pinged ${RENDER_EXTERNAL_URL}/api/ping successfully.`);
+        console.log(`[Anti-Sleep] Ping OK`);
     } catch (error) {
         console.error("[Anti-Sleep] Ping failed:", error);
     }
-}, PING_INTERVAL);
+}, 10 * 60 * 1000);
 
-// --- START SERVER & LISTENERS ---
+// === Start ===
 app.listen(PORT, () => {
-    console.log(`Relayer API listening on port ${PORT}`);
+    console.log(`[Relayer] API on port ${PORT}`);
     startRelayer();
 });
-// ---------------------------------
 
 async function startRelayer() {
-    console.log("Starting Project Jupiter Relayer...");
-    console.log(`Listening to KortanaBridge at ${KORTANA_BRIDGE_ADDRESS}`);
+    console.log(`[Relayer] Starting... Bridge: ${KORTANA_BRIDGE_ADDRESS}`);
 
+    // Initialize last scanned block
+    try {
+        lastScannedBlock = (await kortanaProvider.getBlockNumber()) - 100;
+        console.log(`[Relayer] Starting scan from block ${lastScannedBlock}`);
+    } catch (e) {
+        lastScannedBlock = 0;
+    }
+
+    // === Mode 1: WebSocket-style event listener ===
     kortanaBridge.on("BridgeInitiated", async (transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, timestamp, event) => {
-        if (event.address.toLowerCase() !== KORTANA_BRIDGE_ADDRESS.toLowerCase()) return;
-
-        if (processedEvents.has(transferId)) {
-            console.log(`Transfer ${transferId} already processed in cache. Skipping.`);
+        const addr = (event as any).log?.address || (event as any).address || '';
+        if (addr.toLowerCase() !== KORTANA_BRIDGE_ADDRESS.toLowerCase()) {
+            console.log(`[Relayer] Ignoring event from wrong address: ${addr}`);
             return;
         }
-
-        console.log(`Detected new bridge event: ${transferId} targeting chain ${dstChainId.toString()}`);
-        // Stage 2: Relayer Processing
-        processedEvents.set(transferId, 2);
-
-        try {
-            await processTransfer(transferId, dstUser, dstChainId, amount, minOutNative, deadline, event.log.blockNumber);
-        } catch (error) {
-            console.error(`Failed to process transfer ${transferId}:`, error);
-        }
+        console.log(`[Relayer][Listener] BridgeInitiated: ${transferId}`);
+        await handleBridgeEvent(transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, (event as any).log?.blockNumber || 0);
     });
+
+    console.log(`[Relayer] Event listener active`);
+
+    // === Mode 2: Periodic getLogs polling fallback ===
+    setInterval(async () => {
+        try {
+            const currentBlock = await kortanaProvider.getBlockNumber();
+            if (currentBlock <= lastScannedBlock) return;
+
+            const fromBlock = lastScannedBlock + 1;
+            const toBlock = Math.min(currentBlock, fromBlock + 500); // Cap range to avoid timeout
+
+            console.log(`[Relayer][Poll] Scanning blocks ${fromBlock} - ${toBlock}`);
+
+            const logs = await kortanaProvider.getLogs({
+                address: KORTANA_BRIDGE_ADDRESS,
+                fromBlock,
+                toBlock,
+                topics: [bridgeIface.getEvent('BridgeInitiated')!.topicHash]
+            });
+
+            if (logs.length > 0) {
+                console.log(`[Relayer][Poll] Found ${logs.length} event(s)`);
+                for (const log of logs) {
+                    const parsed = bridgeIface.parseLog(log)!;
+                    await handleBridgeEvent(
+                        parsed.args.transferId,
+                        parsed.args.sender,
+                        parsed.args.dstUser,
+                        parsed.args.dstChainId,
+                        parsed.args.amount,
+                        parsed.args.minOutNative,
+                        parsed.args.deadline,
+                        log.blockNumber
+                    );
+                }
+            }
+
+            lastScannedBlock = toBlock;
+        } catch (err) {
+            console.error(`[Relayer][Poll] Error scanning logs:`, err);
+        }
+    }, POLLING_INTERVAL_MS);
+}
+
+async function handleBridgeEvent(
+    transferId: string,
+    sender: string,
+    dstUser: string,
+    dstChainId: bigint,
+    amount: bigint,
+    minOutNative: bigint,
+    deadline: bigint,
+    blockNumber: number
+) {
+    const key = transferId.toLowerCase();
+
+    if (dispatchedTransfers.has(key)) {
+        console.log(`[Relayer] Transfer ${transferId} already dispatched. Skipping.`);
+        return;
+    }
+
+    dispatchedTransfers.add(key);
+    processedEvents.set(transferId, 2); // Stage 2: Relayer Processing
+
+    console.log(`[Relayer] Processing ${transferId} -> chain ${dstChainId.toString()} for ${ethers.formatEther(amount)} DNR`);
+
+    try {
+        await processTransfer(transferId, dstUser, dstChainId, amount, minOutNative, deadline, blockNumber);
+    } catch (error) {
+        console.error(`[Relayer] Failed to process ${transferId}:`, error);
+        dispatchedTransfers.delete(key); // Allow retry on next poll
+    }
 }
 
 async function processTransfer(
@@ -133,94 +209,74 @@ async function processTransfer(
     deadline: bigint,
     blockNumber: number
 ) {
-    console.log(`Processing ${transferId} to ${dstUser} on chain ${dstChainId.toString()} for ${ethers.formatEther(amount)} DNR`);
+    // === Route to correct chain ===
+    let targetExecutor: ethers.Contract;
 
-    // Multi-chain routing logic
-    let targetProvider, targetExecutor;
-    
     if (dstChainId === BigInt(11155111)) {
-        targetProvider = sepoliaProvider;
         targetExecutor = sepoliaExecutor;
     } else if (dstChainId === BigInt(80002)) {
         const amoyProvider = new ethers.JsonRpcProvider(AMOY_RPC);
         const amoyWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, amoyProvider);
         targetExecutor = new ethers.Contract(AMOY_EXECUTOR_ADDRESS, sepoliaExecutorAbi, amoyWallet);
-        targetProvider = amoyProvider;
     } else if (dstChainId === BigInt(97)) {
         const bnbProvider = new ethers.JsonRpcProvider(BNB_RPC);
         const bnbWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, bnbProvider);
         targetExecutor = new ethers.Contract(BNB_EXECUTOR_ADDRESS, sepoliaExecutorAbi, bnbWallet);
-        targetProvider = bnbProvider;
     } else {
-        console.error(`Chain ${dstChainId.toString()} not currently supported by this relayer instance`);
+        console.error(`[Relayer] Unsupported chain: ${dstChainId.toString()}`);
         return;
     }
 
-    // Step 1: Wait for block confirmations
+    // === Wait for Kortana confirmations ===
     let currentBlock = await kortanaProvider.getBlockNumber();
     while (currentBlock < blockNumber + CONFIRMATION_BLOCKS) {
-        await new Promise(r => setTimeout(r, 10000));
+        console.log(`[Relayer] Waiting for confirmations: ${currentBlock} / ${blockNumber + CONFIRMATION_BLOCKS}`);
+        await new Promise(r => setTimeout(r, 8000));
         currentBlock = await kortanaProvider.getBlockNumber();
     }
 
-    // Double-processing guard
+    // === On-chain replay guard ===
     const isProcessed = await targetExecutor.processedTransfers(transferId);
     if (isProcessed) {
-        console.log(`Transfer ${transferId} already processed on-chain. Skipping.`);
+        console.log(`[Relayer] ${transferId} already processed on-chain. Marking complete.`);
+        processedEvents.set(transferId, 5);
         return;
     }
 
-    // Step 2: Direct On-Chain Uniswap Routing (No APIs!)
-    // We completely bypass off-chain REST aggregators. 
-    // The UniswapSwapAdapter handles the routing entirely on the blockchain.
-
-    // Step 3: Compute minOutNative
-    const finalMinOutNative = originalMinOutNative;
-
-    // Step 4: Encode extraData
-    // We send empty bytes since the UniswapAdapter computes the path on-chain!
-    const extraData = "0x";
-
-    /// TODO: integrate multi-sig or threshold validator signatures before step 5
-
-    // Step 5: Submit to Sepolia
+    // === Submit to destination chain ===
     let retries = 0;
     while (retries < MAX_RETRIES) {
         try {
-            console.log(`Submitting TX to target chain ${dstChainId.toString()} for ${transferId}...`);
-            // Stage 3: Minting wDNR on target chain
-            processedEvents.set(transferId, 3);
+            console.log(`[Relayer] Submitting executeBridgeAndSwap for ${transferId}... (attempt ${retries + 1})`);
+            processedEvents.set(transferId, 3); // Minting
 
             const tx = await targetExecutor.executeBridgeAndSwap(
                 KORTANA_CHAIN_ID,
                 transferId,
                 dstUser,
                 amount,
-                finalMinOutNative,
+                originalMinOutNative,
                 deadline,
-                extraData
+                "0x"
             );
 
-            console.log(`TX sent: ${tx.hash}. Waiting for confirmations...`);
-            // Stage 4: Swapping
-            processedEvents.set(transferId, 4);
+            console.log(`[Relayer] TX sent: ${tx.hash}`);
+            processedEvents.set(transferId, 4); // Swapping
 
             await tx.wait(SEPOLIA_CONFIRMATIONS);
-            console.log(`Bridge completed successfully for ${transferId}!`);
-
-            // Stage 5: Complete
-            processedEvents.set(transferId, 5);
+            console.log(`[Relayer] Bridge complete for ${transferId}!`);
+            processedEvents.set(transferId, 5); // Complete
             break;
-        } catch (error) {
-            console.error(`Sepolia TX failed on attempt ${retries + 1}:`, error);
+
+        } catch (error: any) {
+            console.error(`[Relayer] TX failed attempt ${retries + 1}:`, error?.shortMessage || error);
             retries++;
             if (retries >= MAX_RETRIES) {
-                console.error(`Max retries reached for ${transferId}. Escalating to manual queue.`);
-                // Escalate to manual queue (e.g. pagerduty, db flag)
+                console.error(`[Relayer] Max retries reached for ${transferId}.`);
+                processedEvents.set(transferId, 2); // Reset to processing so UI can see it's still pending
             } else {
-                await new Promise(r => setTimeout(r, 5000 * retries)); // Exponential backoff
+                await new Promise(r => setTimeout(r, 5000 * retries));
             }
         }
     }
 }
-
