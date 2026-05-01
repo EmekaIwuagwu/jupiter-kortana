@@ -8,7 +8,7 @@ import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
 import { useWriteContract, useAccount, useSwitchChain, usePublicClient } from 'wagmi';
-import { parseEther } from 'viem';
+import { parseEther, decodeEventLog } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
 export default function Home() {
@@ -73,12 +73,12 @@ export default function Home() {
       console.log("Waiting for Kortana transaction receipt to extract transferId...");
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
       
-      // BridgeInitiated event signature: 0x...
-      // transferId is the first indexed parameter (topics[1])
+      // BridgeInitiated event extraction using direct topic hash
+      const BRIDGE_INITIATED_TOPIC = "0x85866b9de06dad825d7fbba5670be5d800a8796417df743ffb7a82ac95877779";
       let realTransferId = "0x" + "0".repeat(64);
+      
       for (const log of receipt.logs) {
-        if (log.topics && log.topics.length > 1) {
-            // Usually the first indexed param is our transferId
+        if (log.topics && log.topics[0] === BRIDGE_INITIATED_TOPIC) {
             realTransferId = log.topics[1] as string;
             break;
         }
