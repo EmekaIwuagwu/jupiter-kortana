@@ -7,7 +7,7 @@ import { TransactionProgress } from '../components/TransactionProgress';
 import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
-import { useWriteContract, useAccount, useSwitchChain } from 'wagmi';
+import { useAccount, useSwitchChain, useSendTransaction } from 'wagmi';
 import { parseEther, encodePacked, keccak256, toFunctionSelector } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
@@ -24,7 +24,7 @@ export default function Home() {
   const [originTxHash, setOriginTxHash] = useState<string>('');
   const progressRef = useRef(0);
 
-  const { writeContractAsync } = useWriteContract();
+  const { sendTransactionAsync } = useSendTransaction();
   const { isConnected, chainId, address } = useAccount();
   const { switchChainAsync } = useSwitchChain();
 
@@ -226,17 +226,15 @@ export default function Home() {
         console.warn('[Debug] Gas estimation error, using default:', e);
       }
 
-      // Step 3: Submit bridge transaction on Kortana
-      console.log(`[Jupiter] Triggering MetaMask for transaction to ${targetNetwork.name}... (gas: ${gasLimit.toString()})`);
+      // Step 3: Submit as a RAW sendTransaction — EOA-style, lowest abstraction possible
+      console.log(`[Jupiter] Sending raw tx to Kortana... (gas: ${gasLimit.toString()})`);
 
-      const txHash = await writeContractAsync({
-        abi: KortanaBridgeABI,
-        address: KORTANA_BRIDGE_TESTNET as `0x${string}`,
-        functionName: 'send',
-        args: [BigInt(targetNetwork.id), destination as `0x${string}`, minOutNative, BigInt(deadline)],
+      const txHash = await sendTransactionAsync({
+        to: KORTANA_BRIDGE_TESTNET as `0x${string}`,
         value: amountWei,
-        chainId: 72511,
+        data: simCalldata as `0x${string}`,
         gas: gasLimit,
+        chainId: 72511,
       });
 
       setOriginTxHash(txHash);
