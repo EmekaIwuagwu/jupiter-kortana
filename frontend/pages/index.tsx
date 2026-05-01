@@ -68,15 +68,26 @@ export default function Home() {
       console.log("Tx Submitted:", txHash);
       setProgressStage(1); // DNR Locked
 
-      // 2. Poll the Relayer Backend API for cross-chain status
-      // In production, we would decode the tx receipt to get the exact transferId.
-      // Here we simulate the frontend asking the backend every 3 seconds.
-      const mockTransferId = "0x" + "0".repeat(64); // Placeholder for actual bytes32 transferId
+      // Wait for receipt to extract the real transferId
+      console.log("Waiting for Kortana transaction receipt to extract transferId...");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
       
+      // BridgeInitiated event signature: 0x...
+      // transferId is the first indexed parameter (topics[1])
+      let realTransferId = "0x" + "0".repeat(64);
+      for (const log of receipt.logs) {
+        if (log.topics && log.topics.length > 1) {
+            // Usually the first indexed param is our transferId
+            realTransferId = log.topics[1] as string;
+            break;
+        }
+      }
+      console.log("Extracted Transfer ID:", realTransferId);
+
       const pollInterval = setInterval(async () => {
         try {
           const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://jupiter-project-2isy.onrender.com";
-          const res = await fetch(`${BACKEND_URL}/api/status/${mockTransferId}`);
+          const res = await fetch(`${BACKEND_URL}/api/status/${realTransferId}`);
           const data = await res.json();
           
           if (data.stage > progressStage) {
