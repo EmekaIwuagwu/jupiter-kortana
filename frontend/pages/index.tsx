@@ -7,7 +7,7 @@ import { TransactionProgress } from '../components/TransactionProgress';
 import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
-import { useWriteContract, useAccount } from 'wagmi';
+import { useWriteContract, useAccount, useSwitchChain } from 'wagmi';
 import { parseEther } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
@@ -20,7 +20,8 @@ export default function Home() {
   const [targetNetwork, setTargetNetwork] = useState<any>(null);
 
   const { writeContractAsync } = useWriteContract();
-  const { isConnected } = useAccount();
+  const { isConnected, chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
 
   const handleContinue = (amt: string, dest: string, deadline: number, net: any) => {
     setAmount(amt);
@@ -40,6 +41,18 @@ export default function Home() {
       const estimatedOut = parseFloat(amount) * targetNetwork.rate;
       const minOutNative = parseEther((estimatedOut * 0.995).toFixed(18)); // 0.5% slippage
       const amountWei = parseEther(amount);
+
+      // 0. Ensure user is on Kortana Testnet (Chain ID 72511) before sending!
+      if (chainId !== 72511) {
+        console.log("User is on wrong network. Prompting to switch to Kortana...");
+        try {
+          await switchChainAsync({ chainId: 72511 });
+        } catch (switchError) {
+          console.error("User rejected network switch:", switchError);
+          setStep(1);
+          return;
+        }
+      }
 
       // 1. Send transaction to Kortana Testnet
       console.log(`Triggering MetaMask for transaction to ${targetNetwork.name}...`);
