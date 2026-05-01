@@ -1,4 +1,4 @@
-export const KORTANA_BRIDGE_TESTNET = "0x78371532be8DA2d9e9eAaC274A50FBf555123eE5";
+export const KORTANA_BRIDGE_TESTNET = "0xD1d753A28e063c5DD7ea4d42A75616aA20Dc0fC0";
 export const POLYGON_EXECUTOR_TESTNET = "0xa509C6b006d7174e479385Fedf9Ae5462D7747A3";
 
 export const KortanaBridgeABI = [
@@ -12,7 +12,7 @@ export const KortanaBridgeABI = [
     ],
     "name": "bridgeAndSwap",
     "outputs": [],
-    "stateMutability": "nonpayable",
+    "stateMutability": "payable",
     "type": "function"
   },
   {

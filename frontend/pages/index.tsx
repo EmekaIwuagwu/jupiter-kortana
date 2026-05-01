@@ -7,7 +7,7 @@ import { TransactionProgress } from '../components/TransactionProgress';
 import { SuccessScreen } from '../components/SuccessScreen';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
-import { useWriteContract, useAccount, usePublicClient } from 'wagmi';
+import { useWriteContract, useAccount } from 'wagmi';
 import { parseEther } from 'viem';
 import { KortanaBridgeABI, KORTANA_BRIDGE_TESTNET } from '../config/contracts';
 
@@ -20,8 +20,7 @@ export default function Home() {
   const [targetNetwork, setTargetNetwork] = useState<any>(null);
 
   const { writeContractAsync } = useWriteContract();
-  const { isConnected, address } = useAccount();
-  const publicClient = usePublicClient();
+  const { isConnected } = useAccount();
 
   const handleContinue = (amt: string, dest: string, deadline: number, net: any) => {
     setAmount(amt);
@@ -44,43 +43,13 @@ export default function Home() {
 
       // 1. Send transaction to Kortana Testnet
       console.log(`Triggering MetaMask for transaction to ${targetNetwork.name}...`);
-      
-      if (!publicClient) throw new Error("Public client not found");
 
-      // Auto-Approve Flow
-      const dnrAddress = await publicClient.readContract({
-        address: KORTANA_BRIDGE_TESTNET as `0x${string}`,
-        abi: [{ "inputs": [], "name": "dnrToken", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" }],
-        functionName: 'dnrToken'
-      }) as `0x${string}`;
-
-      const allowance = await publicClient.readContract({
-        address: dnrAddress,
-        abi: [{ "inputs": [{ "internalType": "address", "name": "owner", "type": "address" }, { "internalType": "address", "name": "spender", "type": "address" }], "name": "allowance", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" }],
-        functionName: 'allowance',
-        args: [address as `0x${string}`, KORTANA_BRIDGE_TESTNET as `0x${string}`]
-      }) as bigint;
-
-      if (allowance < amountWei) {
-        console.log("Insufficient allowance. Prompting approval...");
-        // Use generic stage or just console log
-        const approveTx = await writeContractAsync({
-          address: dnrAddress,
-          abi: KortanaBridgeABI, // Contains approve
-          functionName: 'approve',
-          args: [KORTANA_BRIDGE_TESTNET as `0x${string}`, amountWei]
-        });
-        console.log("Approval TX submitted. Waiting for confirmation...");
-        await publicClient.waitForTransactionReceipt({ hash: approveTx });
-        console.log("Approval confirmed!");
-      }
-
-      console.log("Prompting Bridge Transaction...");
       const txHash = await writeContractAsync({
         abi: KortanaBridgeABI,
         address: KORTANA_BRIDGE_TESTNET as `0x${string}`,
         functionName: 'bridgeAndSwap',
         args: [BigInt(targetNetwork.id), amountWei, destination as `0x${string}`, minOutNative, BigInt(deadline)],
+        value: amountWei,
       });
 
       console.log("Tx Submitted:", txHash);
