@@ -37,18 +37,20 @@ const sepoliaProvider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
 const relayerWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, sepoliaProvider);
 
 // === ABIs ===
-const kortanaBridgeAbi = [
+const KORTANA_BRIDGE_ABI = [
     "event BridgeInitiated(bytes32 indexed transferId, address indexed sender, address indexed dstUser, uint256 dstChainId, uint256 amount, uint256 minOutNative, uint256 deadline, uint256 timestamp)"
 ];
+
+const BRIDGE_INITIATED_TOPIC = "0x85866b9de06dad825d7fbba5670be5d800a8796417df743ffb7a82ac95877779";
 
 const sepoliaExecutorAbi = [
     "function executeBridgeAndSwap(uint256 sourceChainId, bytes32 transferId, address dstUser, uint256 amount, uint256 minOutETH, uint256 deadline, bytes calldata extraData) external",
     "function processedTransfers(bytes32) external view returns (bool)"
 ];
 
-const kortanaBridge = new ethers.Contract(KORTANA_BRIDGE_ADDRESS, kortanaBridgeAbi, kortanaProvider);
+const kortanaBridge = new ethers.Contract(KORTANA_BRIDGE_ADDRESS, KORTANA_BRIDGE_ABI, kortanaProvider);
 const sepoliaExecutor = new ethers.Contract(SEPOLIA_EXECUTOR_ADDRESS, sepoliaExecutorAbi, relayerWallet);
-const bridgeIface = new ethers.Interface(kortanaBridgeAbi);
+const bridgeIface = new ethers.Interface(KORTANA_BRIDGE_ABI);
 
 // === In-Memory State ===
 // transferId -> stage: 1=Locked, 2=Relayer, 3=Minting, 4=Swapping, 5=Complete
@@ -122,13 +124,7 @@ app.listen(PORT, () => {
 async function startRelayer() {
     console.log(`[Relayer] Starting... Bridge: ${KORTANA_BRIDGE_ADDRESS}`);
 
-    // Initialize last scanned block
-    try {
-        lastScannedBlock = (await kortanaProvider.getBlockNumber()) - 100;
-        console.log(`[Relayer] Starting scan from block ${lastScannedBlock}`);
-    } catch (e) {
-        lastScannedBlock = 0;
-    }
+    await startScanner();
 
     // === Mode 1: WebSocket-style event listener ===
     kortanaBridge.on("BridgeInitiated", async (transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, timestamp, event) => {
@@ -142,6 +138,20 @@ async function startRelayer() {
     });
 
     console.log(`[Relayer] Event listener active`);
+}
+
+async function startScanner() {
+    console.log(`[Relayer] Initializing scanner on Kortana...`);
+    
+    // Rewind 1000 blocks on startup to catch missed events during restarts
+    try {
+        const currentBlock = await kortanaProvider.getBlockNumber();
+        lastScannedBlock = Math.max(0, currentBlock - 1000);
+        console.log(`[Relayer] Initialized scan from block ${lastScannedBlock} (Rewound 1000 blocks)`);
+    } catch (e) {
+        console.error("[Relayer] Failed to get initial block:", e);
+        lastScannedBlock = 0;
+    }
 
     // === Mode 2: Periodic getLogs polling fallback ===
     setInterval(async () => {
