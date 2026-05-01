@@ -57,23 +57,30 @@ const bridgeIface = new ethers.Interface(KORTANA_BRIDGE_ABI);
 const processedEvents = new Map<string, number>();
 // transferId -> already dispatched (prevents double-processing)
 const dispatchedTransfers = new Set<string>();
+// transferId -> destination chain tx hash (for explorer links)
+const destinationTxHashes = new Map<string, string>();
+// transferId -> last known error message
+const transferErrors = new Map<string, string>();
 
 let lastScannedBlock = 0;
+
 
 // === Express API ===
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Debug endpoint — shows last known error per transfer
-const transferErrors = new Map<string, string>();
-
 app.get('/api/status/:transferId', (req, res) => {
     const { transferId } = req.params;
     const normalized = transferId.toLowerCase();
     const found = [...processedEvents.keys()].find(k => k.toLowerCase() === normalized);
     if (found) {
-        res.json({ status: 'FOUND', stage: processedEvents.get(found), error: transferErrors.get(found) || null });
+        res.json({
+            status: 'FOUND',
+            stage: processedEvents.get(found),
+            error: transferErrors.get(found) || null,
+            destinationTxHash: destinationTxHashes.get(found) || null,
+        });
     } else {
         res.json({ status: 'NOT_FOUND', stage: 1 });
     }
@@ -293,6 +300,7 @@ async function processTransfer(
 
             console.log(`[Relayer] TX sent: ${tx.hash}`);
             processedEvents.set(transferId, 4); // Swapping
+            destinationTxHashes.set(transferId, tx.hash); // Store for explorer link
 
             await tx.wait(SEPOLIA_CONFIRMATIONS);
             console.log(`[Relayer] Bridge complete for ${transferId}!`);

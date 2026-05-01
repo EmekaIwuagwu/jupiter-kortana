@@ -22,6 +22,7 @@ export default function Home() {
   const [progressStage, setProgressStage] = useState(0);
   const [targetNetwork, setTargetNetwork] = useState<any>(null);
   const [originTxHash, setOriginTxHash] = useState<string>('');
+  const [destinationTxHash, setDestinationTxHash] = useState<string>('');
   const progressRef = useRef(0);
 
   const { sendTransactionAsync } = useSendTransaction();
@@ -282,6 +283,12 @@ export default function Home() {
             console.warn('[Debug] Relayer state for this transfer:', JSON.stringify(dbg, null, 2));
           }
 
+          // Capture destination tx hash as soon as it's available
+          if (data.destinationTxHash && !destinationTxHash) {
+            setDestinationTxHash(data.destinationTxHash);
+            console.log('[Jupiter] Destination TX:', data.destinationTxHash);
+          }
+
           // Always advance forward, never go backward
           if (data.stage > progressRef.current) {
             advanceStage(data.stage);
@@ -317,6 +324,7 @@ export default function Home() {
     setDestination('');
     advanceStage(0);
     setOriginTxHash('');
+    setDestinationTxHash('');
   };
 
   return (
@@ -371,6 +379,7 @@ export default function Home() {
               amountReceived={(parseFloat(amount) * targetNetwork.rate).toFixed(2)}
               targetNetwork={targetNetwork}
               originTxHash={originTxHash}
+              destinationTxHash={destinationTxHash}
               onReset={closeModals}
             />
           )}
