@@ -201,8 +201,33 @@ export default function Home() {
         console.log('[Debug] Pre-flight PASSED — transaction should succeed');
       }
 
-      // Step 2: Submit bridge transaction on Kortana
-      console.log(`[Jupiter] Triggering MetaMask for transaction to ${targetNetwork.name}...`);
+      // Step 2: Estimate gas for the real transaction
+      let gasLimit: bigint = 300000n; // safe default fallback
+      try {
+        const gasRes = await fetch(KORTANA_RPC, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'eth_estimateGas',
+            params: [{ from: address, to: KORTANA_BRIDGE_TESTNET, value: valueHex, data: simCalldata }],
+            id: 2
+          })
+        });
+        const gasJson = await gasRes.json();
+        if (gasJson.result) {
+          const estimated = BigInt(gasJson.result);
+          gasLimit = estimated + (estimated * 50n / 100n); // add 50% buffer
+          console.log(`[Debug] Gas estimate: ${estimated.toString()}, using ${gasLimit.toString()} with 50% buffer`);
+        } else {
+          console.warn('[Debug] Gas estimation failed, using default 300000:', gasJson.error);
+        }
+      } catch (e) {
+        console.warn('[Debug] Gas estimation error, using default:', e);
+      }
+
+      // Step 3: Submit bridge transaction on Kortana
+      console.log(`[Jupiter] Triggering MetaMask for transaction to ${targetNetwork.name}... (gas: ${gasLimit.toString()})`);
 
       const txHash = await writeContractAsync({
         abi: KortanaBridgeABI,
@@ -211,6 +236,7 @@ export default function Home() {
         args: [BigInt(targetNetwork.id), destination as `0x${string}`, minOutNative, BigInt(deadline)],
         value: amountWei,
         chainId: 72511,
+        gas: gasLimit,
       });
 
       setOriginTxHash(txHash);
