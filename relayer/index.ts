@@ -27,6 +27,7 @@ const CONFIRMATION_BLOCKS = 2;
 const SEPOLIA_CONFIRMATIONS = 2;
 const MAX_RETRIES = 3;
 const KORTANA_CHAIN_ID = process.env.KORTANA_CHAIN_ID ? parseInt(process.env.KORTANA_CHAIN_ID) : 72511;
+const POLLING_INTERVAL_MS = 10000; // 10 seconds
 
 // === DEX Aggregator Config (No API key required) ===
 // Primary:  KyberSwap  — free, no auth, deep liquidity on all major chains
