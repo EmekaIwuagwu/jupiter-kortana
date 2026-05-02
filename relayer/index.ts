@@ -194,13 +194,19 @@ async function startRelayer() {
 
     // === Mode 1: WebSocket-style event listener ===
     kortanaBridge.on("BridgeInitiated", async (transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, timestamp, event) => {
-        const addr = (event as any).log?.address || (event as any).address || '';
-        if (addr.toLowerCase() !== KORTANA_BRIDGE_ADDRESS.toLowerCase()) {
-            console.log(`[Relayer] Ignoring event from wrong address: ${addr}`);
-            return;
+        try {
+            const addr = (event as any).log?.address || (event as any).address || '';
+            if (addr.toLowerCase() !== KORTANA_BRIDGE_ADDRESS.toLowerCase()) {
+                console.log(`[Relayer] Ignoring event from wrong address: ${addr}`);
+                return;
+            }
+            console.log(`[Relayer][Listener] BridgeInitiated: ${transferId}`);
+            await handleBridgeEvent(transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, (event as any).log?.blockNumber || 0);
+        } catch (e: any) {
+            console.error(`[Relayer][CRITICAL] Listener failed for ${transferId}:`, e);
+            processedEvents.set(transferId, 2);
+            transferErrors.set(transferId, `CRITICAL_LISTENER_ERROR: ${e.message}`);
         }
-        console.log(`[Relayer][Listener] BridgeInitiated: ${transferId}`);
-        await handleBridgeEvent(transferId, sender, dstUser, dstChainId, amount, minOutNative, deadline, (event as any).log?.blockNumber || 0);
     });
 
     console.log(`[Relayer] Event listener active`);

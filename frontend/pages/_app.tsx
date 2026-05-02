@@ -10,7 +10,11 @@ import '../styles/globals.css';
 const kortanaTestnet = {
   id: 72511,
   name: 'Kortana Testnet',
-  nativeCurrency: { name: 'Dinar', symbol: 'DNR', decimals: 18 },
+  nativeCurrency: { 
+    name: 'Dinar', 
+    symbol: 'DNR', 
+    decimals: 18 
+  },
   rpcUrls: {
     default: { http: ['https://poseidon-rpc.testnet.kortana.xyz/'] },
     public: { http: ['https://poseidon-rpc.testnet.kortana.xyz/'] },
@@ -18,7 +22,7 @@ const kortanaTestnet = {
   blockExplorers: {
     default: { name: 'Kortana Explorer', url: 'https://explorer.testnet.kortana.xyz' },
   },
-};
+} as const;
 
 // Define Kortana Mainnet
 const kortanaMainnet = {
