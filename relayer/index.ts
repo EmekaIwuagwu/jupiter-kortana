@@ -20,7 +20,7 @@ const BNB_RPC = process.env.BNB_RPC || 'https://bsc-testnet-rpc.publicnode.com';
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY || '';
 const KORTANA_BRIDGE_ADDRESS = process.env.KORTANA_BRIDGE_ADDRESS || '0x905784c7611Df616F6021AC57b95eE6B6983B416';
 const SEPOLIA_EXECUTOR_ADDRESS = process.env.SEPOLIA_EXECUTOR_ADDRESS || '';
-const AMOY_EXECUTOR_ADDRESS = process.env.AMOY_EXECUTOR_ADDRESS || '0x905784c7611Df616F6021AC57b95eE6B6983B416';
+const AMOY_EXECUTOR_ADDRESS = process.env.AMOY_EXECUTOR_ADDRESS || '';
 const BNB_EXECUTOR_ADDRESS = process.env.BNB_EXECUTOR_ADDRESS || '';
 
 const CONFIRMATION_BLOCKS = 2;
@@ -308,24 +308,45 @@ async function processTransfer(
 ) {
     // === Route to correct chain ===
     let targetExecutor: ethers.Contract;
+    let executorAddr: string = '';
+
+    console.log(`[Relayer][DEBUG] Resolving executor for chain ${dstChainId}...`);
 
     if (dstChainId === BigInt(11155111)) {
+        executorAddr = SEPOLIA_EXECUTOR_ADDRESS;
         targetExecutor = sepoliaExecutor;
     } else if (dstChainId === BigInt(80002)) {
+        executorAddr = AMOY_EXECUTOR_ADDRESS;
         const amoyProvider = new ethers.JsonRpcProvider(AMOY_RPC);
         const amoyWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, amoyProvider);
         targetExecutor = new ethers.Contract(AMOY_EXECUTOR_ADDRESS, sepoliaExecutorAbi, amoyWallet);
     } else if (dstChainId === BigInt(97)) {
+        executorAddr = BNB_EXECUTOR_ADDRESS;
         const bnbProvider = new ethers.JsonRpcProvider(BNB_RPC);
         const bnbWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, bnbProvider);
         targetExecutor = new ethers.Contract(BNB_EXECUTOR_ADDRESS, sepoliaExecutorAbi, bnbWallet);
     } else {
-        console.error(`[Relayer] Unsupported chain: ${dstChainId.toString()}`);
+        const err = `Unsupported chain: ${dstChainId.toString()}`;
+        console.error(`[Relayer] ${err}`);
+        processedEvents.set(transferId, 2);
+        transferErrors.set(transferId, err);
         return;
     }
 
+    if (!executorAddr) {
+        const err = `Executor address for chain ${dstChainId} is NOT CONFIGURED in .env`;
+        console.error(`[Relayer] ${err}`);
+        processedEvents.set(transferId, 2);
+        transferErrors.set(transferId, err);
+        return;
+    }
+
+    console.log(`[Relayer][DEBUG] Using executor at: ${executorAddr}`);
+
     // === Wait for Kortana confirmations ===
     let currentBlock = await kortanaProvider.getBlockNumber();
+    console.log(`[Relayer][DEBUG] Current Kortana block: ${currentBlock}. Waiting for ${blockNumber + CONFIRMATION_BLOCKS}`);
+    
     while (currentBlock < blockNumber + CONFIRMATION_BLOCKS) {
         console.log(`[Relayer] Waiting for confirmations: ${currentBlock} / ${blockNumber + CONFIRMATION_BLOCKS}`);
         await new Promise(r => setTimeout(r, 8000));
@@ -333,6 +354,7 @@ async function processTransfer(
     }
 
     // === On-chain replay guard ===
+    console.log(`[Relayer][DEBUG] Checking if transfer ${transferId} is already processed...`);
     const isProcessed = await targetExecutor.processedTransfers(transferId);
     if (isProcessed) {
         console.log(`[Relayer] ${transferId} already processed on-chain. Marking complete.`);
@@ -343,7 +365,14 @@ async function processTransfer(
     // === Fetch DEX Aggregator swap data (mainnet) or use testnet fallback ===
     const chainIdNum = Number(dstChainId);
     const wDNRAddress = WDNR_ADDRESSES[chainIdNum] || '';
-    const executorAddress = await targetExecutor.getAddress();
+    
+    if (!wDNRAddress && chainIdNum !== 11155111 && chainIdNum !== 80002) {
+        const err = `wDNR token address for chain ${chainIdNum} is NOT CONFIGURED`;
+        console.error(`[Relayer] ${err}`);
+        processedEvents.set(transferId, 2);
+        transferErrors.set(transferId, err);
+        return;
+    }
 
     // Testnets use MockSwapAdapter — no DEX routing needed
     const isTestnet = [11155111, 80002, 97].includes(chainIdNum);
@@ -353,16 +382,21 @@ async function processTransfer(
 
     if (!isTestnet && wDNRAddress) {
         console.log(`[Relayer] Mainnet chain ${chainIdNum} — fetching aggregator swap route...`);
-        const result = await fetchSwapData(chainIdNum, wDNRAddress, NATIVE_SENTINEL, amount, executorAddress);
-        swapExtraData = result.extraData;
-        finalMinOut   = result.minOut;
+        try {
+            const result = await fetchSwapData(chainIdNum, wDNRAddress, NATIVE_SENTINEL, amount, executorAddr);
+            swapExtraData = result.extraData;
+            finalMinOut   = result.minOut;
+        } catch (e: any) {
+            console.error(`[Relayer] Aggregator failed: ${e.message}`);
+            // Non-blocking for now, will try with 1 wei if aggregator fails
+        }
     } else {
-        console.log(`[Relayer] Testnet chain ${chainIdNum} — MockAdapter fallback (minOut=1 wei).`);
+        console.log(`[Relayer] Testnet chain ${chainIdNum} — MockAdapter fallback.`);
     }
 
     while (retries < MAX_RETRIES) {
         try {
-            console.log(`[Relayer] Submitting executeBridgeAndSwap for ${transferId}... (attempt ${retries + 1})`);
+            console.log(`[Relayer][DEBUG] Attempting execution for ${transferId} (Try ${retries + 1})...`);
             processedEvents.set(transferId, 3); // Minting
 
             const tx = await targetExecutor.executeBridgeAndSwap(
@@ -377,25 +411,24 @@ async function processTransfer(
 
             console.log(`[Relayer] TX sent: ${tx.hash}`);
             processedEvents.set(transferId, 4); // Swapping
-            destinationTxHashes.set(transferId, tx.hash); // Store for explorer link
+            destinationTxHashes.set(transferId, tx.hash);
 
+            console.log(`[Relayer][DEBUG] Waiting for destination confirmations...`);
             await tx.wait(SEPOLIA_CONFIRMATIONS);
             console.log(`[Relayer] Bridge complete for ${transferId}!`);
             processedEvents.set(transferId, 5); // Complete
             break;
 
         } catch (error: any) {
-            // Full error extraction for debugging
             const shortMsg = error?.shortMessage || error?.message || 'Unknown error';
-            const revertData = error?.data || error?.error?.data || '';
             const reason = error?.reason || '';
-            const fullLog = `[Relayer][ERROR] attempt ${retries + 1}: ${shortMsg} | reason: ${reason} | revertData: ${revertData}`;
+            const fullLog = `[Relayer][ERROR] ${shortMsg} | reason: ${reason}`;
             console.error(fullLog);
             transferErrors.set(transferId, fullLog);
 
             retries++;
             if (retries >= MAX_RETRIES) {
-                console.error(`[Relayer] Max retries reached for ${transferId}. Check /api/debug/${transferId}`);
+                console.error(`[Relayer] Max retries reached for ${transferId}.`);
                 processedEvents.set(transferId, 2);
             } else {
                 await new Promise(r => setTimeout(r, 5000 * retries));
