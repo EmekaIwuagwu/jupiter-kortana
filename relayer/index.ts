@@ -217,8 +217,14 @@ async function startScanner() {
         console.error("[Relayer] Failed to get initial block:", e);
         lastScannedBlock = 0;
     }
-
     // === Mode 2: Periodic getLogs polling fallback ===
+    // On startup, we scan the last 2000 blocks to catch anything missed while offline
+    const latest = await kortanaProvider.getBlockNumber();
+    lastScannedBlock = latest - 2000;
+    if (lastScannedBlock < 0) lastScannedBlock = 0;
+    
+    console.log(`[Relayer] Initialized. Starting scan from block ${lastScannedBlock}`);
+
     setInterval(async () => {
         try {
             const currentBlock = await kortanaProvider.getBlockNumber();
