@@ -2,7 +2,7 @@ const hre = require("hardhat");
 require("dotenv").config();
 
 async function main() {
-    console.log("Deploying Project Jupiter Infrastructure to Ethereum Sepolia...");
+    console.log("Deploying Project Jupiter Infrastructure to BNB Testnet...");
     const [deployer] = await hre.ethers.getSigners();
     console.log("Deployer Address:", deployer.address);
     console.log("Balance:", (await hre.ethers.provider.getBalance(deployer.address)).toString());
@@ -26,17 +26,17 @@ async function main() {
     const swapAdapterAddress = await swapAdapter.getAddress();
     console.log("✅ MockSwapAdapter deployed to:", swapAdapterAddress);
 
-    // 3. Fund Swap Adapter with liquidity (0.01 ETH)
-    console.log("\n3. Funding Swap Adapter with native ETH liquidity...");
+    // 3. Fund Swap Adapter with liquidity (0.1 tBNB)
+    console.log("\n3. Funding Swap Adapter with native BNB liquidity...");
     const fundTx = await deployer.sendTransaction({
         to: swapAdapterAddress,
-        value: hre.ethers.parseEther("0.01")
+        value: hre.ethers.parseEther("0.1")
     });
     await fundTx.wait();
-    console.log("✅ Funded adapter with 0.01 ETH");
+    console.log("✅ Funded adapter with 0.1 tBNB");
 
     // 4. Deploy Executor
-    console.log("\n4. Deploying SepoliaBridgeExecutor...");
+    console.log("\n4. Deploying SepoliaBridgeExecutor (as BNB Executor)...");
     const SepoliaBridgeExecutor = await hre.ethers.getContractFactory("SepoliaBridgeExecutor");
     const executor = await SepoliaBridgeExecutor.deploy(
         wDNRAddress,
@@ -46,7 +46,7 @@ async function main() {
     );
     await executor.waitForDeployment();
     const executorAddress = await executor.getAddress();
-    console.log("✅ SepoliaBridgeExecutor deployed to:", executorAddress);
+    console.log("✅ BNBBridgeExecutor deployed to:", executorAddress);
 
     // 5. Setup Roles
     console.log("\n5. Configuring Roles...");
@@ -62,8 +62,8 @@ async function main() {
 
     console.log("\n--- DEPLOYMENT COMPLETE ---");
     console.log("Update relayer/.env:");
-    console.log(`SEPOLIA_EXECUTOR_ADDRESS=${executorAddress}`);
-    console.log(`WDNR_SEPOLIA_ADDRESS=${wDNRAddress}`);
+    console.log(`BNB_EXECUTOR_ADDRESS=${executorAddress}`);
+    console.log(`WDNR_BNB_ADDRESS=${wDNRAddress}`);
 }
 
 main().catch((error) => {

@@ -347,7 +347,7 @@ export default function Home() {
             Bridge assets with <span className="text-transparent bg-clip-text bg-gradient-to-r from-[var(--pp-blue)] to-[#00f2fe]">unmatched speed.</span>
           </h1>
           <p className="text-[var(--pp-gray-600)] text-xl font-medium">
-            Institutional-grade liquidity routing from Kortana to Polygon. Zero hassle.
+            Institutional-grade liquidity routing from Kortana to Polygon and Ethereum. Zero hassle.
           </p>
         </div>
 

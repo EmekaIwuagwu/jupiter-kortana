@@ -61,8 +61,14 @@ export const BridgeForm: React.FC<BridgeFormProps> = ({ onContinue }) => {
       animate={{ opacity: 1, y: 0 }}
       className="card max-w-[480px] w-full mx-auto mt-8"
     >
-      <div className="text-[var(--pp-gray-600)] text-sm font-semibold mb-6">
-        Step 1 of 3 — Enter Details
+      <div className="flex justify-between items-center mb-6">
+        <div className="text-[var(--pp-gray-600)] text-sm font-semibold uppercase tracking-wider">
+          Step 1 of 3 — Enter Details
+        </div>
+        <div className="flex items-center gap-1.5 bg-green-50 text-green-600 px-2 py-0.5 rounded-full text-xs font-bold border border-green-100">
+          <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+          OPERATIONAL
+        </div>
       </div>
 
       {/* You Send */}

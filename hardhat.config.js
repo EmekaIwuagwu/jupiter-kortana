@@ -22,7 +22,7 @@ module.exports = {
       chainId: 80002
     },
     bnbTestnet: {
-      url: "https://data-seed-prebsc-1-s1.binance.org:8545",
+      url: "https://bsc-testnet-rpc.publicnode.com",
       accounts: [PRIVATE_KEY],
       chainId: 97
     }
