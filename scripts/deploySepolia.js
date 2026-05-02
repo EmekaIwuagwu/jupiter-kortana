@@ -2,13 +2,15 @@ const hre = require("hardhat");
 require("dotenv").config();
 
 async function main() {
-    console.log("Deploying Project Jupiter Infrastructure to Ethereum Sepolia...");
+    console.log("Deploying Real-Deal Uniswap Infrastructure to Ethereum Sepolia...");
     const [deployer] = await hre.ethers.getSigners();
     console.log("Deployer Address:", deployer.address);
-    console.log("Balance:", (await hre.ethers.provider.getBalance(deployer.address)).toString());
 
     const kortanaChainId = 72511;
     const relayerAddress = "0xe0b2986830E3Db1dDA24De312E99F5e67C38dfE5";
+    
+    // Uniswap V2 Router on Sepolia
+    const UNI_ROUTER = "0xc532a74256d3db42d0bf7a0400fefdbad7694008";
 
     // 1. Deploy wDNR
     console.log("\n1. Deploying WrappedDNR...");
@@ -18,25 +20,16 @@ async function main() {
     const wDNRAddress = await wDNR.getAddress();
     console.log("✅ WrappedDNR deployed to:", wDNRAddress);
 
-    // 2. Deploy Mock Swap Adapter
-    console.log("\n2. Deploying MockSwapAdapter...");
-    const MockSwapAdapter = await hre.ethers.getContractFactory("MockSwapAdapter");
-    const swapAdapter = await MockSwapAdapter.deploy();
+    // 2. Deploy Uniswap V2 Swap Adapter
+    console.log("\n2. Deploying UniswapV2SwapAdapter...");
+    const UniswapV2SwapAdapter = await hre.ethers.getContractFactory("UniswapV2SwapAdapter");
+    const swapAdapter = await UniswapV2SwapAdapter.deploy(UNI_ROUTER);
     await swapAdapter.waitForDeployment();
     const swapAdapterAddress = await swapAdapter.getAddress();
-    console.log("✅ MockSwapAdapter deployed to:", swapAdapterAddress);
+    console.log("✅ UniswapV2SwapAdapter deployed to:", swapAdapterAddress);
 
-    // 3. Fund Swap Adapter with liquidity (0.01 ETH)
-    console.log("\n3. Funding Swap Adapter with native ETH liquidity...");
-    const fundTx = await deployer.sendTransaction({
-        to: swapAdapterAddress,
-        value: hre.ethers.parseEther("0.01")
-    });
-    await fundTx.wait();
-    console.log("✅ Funded adapter with 0.01 ETH");
-
-    // 4. Deploy Executor
-    console.log("\n4. Deploying SepoliaBridgeExecutor...");
+    // 3. Deploy Executor
+    console.log("\n3. Deploying SepoliaBridgeExecutor...");
     const SepoliaBridgeExecutor = await hre.ethers.getContractFactory("SepoliaBridgeExecutor");
     const executor = await SepoliaBridgeExecutor.deploy(
         wDNRAddress,
@@ -48,20 +41,15 @@ async function main() {
     const executorAddress = await executor.getAddress();
     console.log("✅ SepoliaBridgeExecutor deployed to:", executorAddress);
 
-    // 5. Setup Roles
-    console.log("\n5. Configuring Roles...");
-    
-    // Allow Executor to mint wDNR
+    // Allow Executor and Deployer to mint wDNR (Deployer needs it to seed liquidity)
     const MINTER_ROLE = await wDNR.MINTER_ROLE();
     await wDNR.grantRole(MINTER_ROLE, executorAddress);
-    console.log("✅ Granted MINTER_ROLE on wDNR to Executor");
-
-    // Authorize Relayer on Executor
+    await wDNR.grantRole(MINTER_ROLE, deployer.address);
+    
     await executor.setRelayer(relayerAddress, true);
-    console.log("✅ Authorized Relayer on Executor:", relayerAddress);
+    console.log("✅ Roles configured and Relayer authorized.");
 
     console.log("\n--- DEPLOYMENT COMPLETE ---");
-    console.log("Update relayer/.env:");
     console.log(`SEPOLIA_EXECUTOR_ADDRESS=${executorAddress}`);
     console.log(`WDNR_SEPOLIA_ADDRESS=${wDNRAddress}`);
 }
