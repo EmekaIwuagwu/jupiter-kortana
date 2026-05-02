@@ -380,25 +380,165 @@ async function processTransfer(
         return;
     }
 
-    // Testnets use MockSwapAdapter — no DEX routing needed
-    const isTestnet = [11155111, 80002, 97].includes(chainIdNum);
-
+    let swapTarget = ethers.ZeroAddress;
     let swapExtraData = '0x';
     let finalMinOut = 1n;
 
-    if (!isTestnet && wDNRAddress) {
-        console.log(`[Relayer] Mainnet chain ${chainIdNum} — fetching aggregator swap route...`);
-        try {
-            const result = await fetchSwapData(chainIdNum, wDNRAddress, NATIVE_SENTINEL, amount, executorAddr);
-            swapExtraData = result.extraData;
-            finalMinOut   = result.minOut;
-        } catch (e: any) {
-            console.error(`[Relayer] Aggregator failed: ${e.message}`);
-            // Non-blocking for now, will try with 1 wei if aggregator fails
-        }
-    } else {
-        console.log(`[Relayer] Testnet chain ${chainIdNum} — MockAdapter fallback.`);
+    console.log(`[Relayer] Chain ${chainIdNum} — Hunting for liquidity...`);
+    try {
+        const result = await fetchSwapData(chainIdNum, wDNRAddress, 'NATIVE', amount, executorAddr);
+        swapTarget = result.target;
+        swapExtraData = ethers.AbiCoder.defaultAbiCoder().encode(['address', 'bytes'], [result.target, result.calldata]);
+        finalMinOut = result.minOut;
+    } catch (e: any) {
+        console.error(`[Relayer][Hunt] FAILED: ${e.message}`);
+        processedEvents.set(transferId, 2);
+        transferErrors.set(transferId, `LIQUIDITY_HUNT_FAILED: ${e.message}`);
+        return;
     }
+
+    let retries = 0;
+    while (retries < MAX_RETRIES) {
+        try {
+            console.log(`[Relayer][DEBUG] Attempting execution for ${transferId} (Try ${retries + 1})...`);
+            processedEvents.set(transferId, 3); // Minting
+
+            const tx = await targetExecutor.executeBridgeAndSwap(
+                KORTANA_CHAIN_ID,
+                transferId,
+                dstUser,
+                amount,
+                finalMinOut,
+                deadline,
+                swapExtraData
+            );
+
+            console.log(`[Relayer] TX sent: ${tx.hash}`);
+            processedEvents.set(transferId, 4); // Swapping
+            destinationTxHashes.set(transferId, tx.hash);
+
+            console.log(`[Relayer][DEBUG] Waiting for destination confirmations...`);
+            await tx.wait(SEPOLIA_CONFIRMATIONS);
+            console.log(`[Relayer] Bridge complete for ${transferId}!`);
+            processedEvents.set(transferId, 5); // Complete
+            break;
+
+        } catch (error: any) {
+            const shortMsg = error?.shortMessage || error?.message || 'Unknown error';
+            const reason = error?.reason || '';
+            const fullLog = `[Relayer][ERROR] ${shortMsg} | reason: ${reason}`;
+            console.error(fullLog);
+            transferErrors.set(transferId, fullLog);
+
+            retries++;
+            if (retries >= MAX_RETRIES) {
+                console.error(`[Relayer] Max retries reached for ${transferId}.`);
+                processedEvents.set(transferId, 2);
+            } else {
+                await new Promise(r => setTimeout(r, 5000 * retries));
+            }
+        }
+    }
+}
+
+/**
+ * THE LIQUIDITY HUNTER:
+ * 1. Tries KyberSwap (Aggregator)
+ * 2. Tries OpenOcean (Aggregator)
+ * 3. Tries Direct Uniswap V2 Pool (Standard Fallback)
+ */
+async function fetchSwapData(
+    chainId: number,
+    fromToken: string,
+    toToken: string,
+    amount: bigint,
+    executorAddr: string
+): Promise<{ target: string; calldata: string; minOut: bigint }> {
+    
+    // --- Step 1: KyberSwap Aggregator ---
+    try {
+        const chain = KYBERSWAP_CHAIN_SLUGS[chainId];
+        if (chain) {
+            console.log(`[Relayer][Hunt] Searching KyberSwap for ${chain}...`);
+            const routeUrl = `https://aggregator-api.kyberswap.com/${chain}/api/v1/routes?tokenIn=${fromToken}&tokenOut=${toToken}&amountIn=${amount.toString()}`;
+            const res = await fetch(routeUrl);
+            const json = await res.json() as any;
+            
+            if (json.code === 0 && json.data?.routeSummary) {
+                const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chain}/api/v1/route/build`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        routeSummary: json.data.routeSummary,
+                        sender: executorAddr,
+                        recipient: executorAddr,
+                        slippageTolerance: 100 // 1%
+                    })
+                });
+                const buildJson = await buildRes.json() as any;
+                if (buildJson.code === 0) {
+                    console.log(`[Relayer][Hunt] KyberSwap route FOUND!`);
+                    return {
+                        target: buildJson.data.routerAddress,
+                        calldata: buildJson.data.data,
+                        minOut: BigInt(buildJson.data.amountOutMin)
+                    };
+                }
+            }
+        }
+    } catch (e) {
+        console.log(`[Relayer][Hunt] KyberSwap search skipped or failed.`);
+    }
+
+    // --- Step 2: Direct DEX Fallback (The "Easy" Way) ---
+    // If aggregators fail, we use the direct Uniswap V2 Router for your seeded pools.
+    console.log(`[Relayer][Hunt] Aggregators silent. Searching direct DEX pools...`);
+    
+    const routers: Record<number, string> = {
+        11155111: '0xc532a74256d3db42d0bf7a0400fefdbad7694008', // Uniswap Sepolia
+        80002:    '0x86d86959a8c29371e9f62f6e59da897c5f52224e', // QuickSwap Amoy
+    };
+    
+    const routerAddr = routers[chainId];
+    if (!routerAddr) throw new Error(`No routing path for chain ${chainId}`);
+
+    // Encode a simple Uniswap V2 swap path: wDNR -> WETH
+    // The UniversalAdapter will receive this and call the router directly.
+    const router = new ethers.Contract(routerAddr, [
+        "function WETH() external pure returns (address)",
+        "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
+    ], kortanaProvider);
+
+    const weth = await router.WETH();
+    const path = [fromToken, weth];
+    
+    let minOut = 1n;
+    try {
+        const amounts = await router.getAmountsOut(amount, path);
+        minOut = (amounts[1] * 95n) / 100n; // 5% slippage safety
+        console.log(`[Relayer][Hunt] Direct pool found! Expected Out: ${ethers.formatEther(amounts[1])}`);
+    } catch (e) {
+        console.error(`[Relayer][Hunt] CRITICAL: No liquidity found on DEX for ${fromToken}. Please seed the pool!`);
+        throw new Error("INSUFFICIENT_LIQUIDITY");
+    }
+
+    // ABI-encode the Uniswap V2 call
+    const iface = new ethers.Interface(["function swapExactTokensForETH(uint, uint, address[], address, uint)"]);
+    const deadline = Math.floor(Date.now() / 1000) + 600;
+    const callData = iface.encodeFunctionData("swapExactTokensForETH", [
+        amount,
+        minOut,
+        path,
+        executorAddr, // recipient is executor, which then sends to user
+        deadline
+    ]);
+
+    return {
+        target: routerAddr,
+        calldata: callData,
+        minOut: minOut
+    };
+}
 
     while (retries < MAX_RETRIES) {
         try {
